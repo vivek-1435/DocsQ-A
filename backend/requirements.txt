@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+langchain
+langchain-google-genai
+langchain-community
+langchain-core
+pypdf
+python-docx
+docx2txt
+faiss-cpu
+pydantic

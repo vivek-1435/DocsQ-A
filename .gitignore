@@ -1,0 +1,30 @@
+# Virtual environment
+backend/venv/
+backend/env/
+.venv/
+env/
+
+# Private API keys and configurations
+backend/.env
+.env
+
+# User uploaded files
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
