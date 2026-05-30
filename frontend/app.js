@@ -49,12 +49,12 @@ function handleFile(file) {
   const ext = '.' + file.name.split('.').pop().toLowerCase();
 
   if (!allowed.includes(ext)) {
-    showToast('❌ Please upload a PDF or Word (.docx) file.', 'error');
+    showToast('Please upload a PDF or Word (.docx) file.', 'error');
     return;
   }
 
   if (file.size > 50 * 1024 * 1024) {
-    showToast('❌ File too large. Maximum size is 50 MB.', 'error');
+    showToast('File too large. Maximum size is 50 MB.', 'error');
     return;
   }
 
@@ -97,14 +97,14 @@ async function uploadFile(file) {
     welcomeScreen.style.display = 'none';
     
     setInputEnabled(true);
-    showToast('✅ Document ready! Ask your first question.', 'success');
+    showToast('Document ready! Ask your first question.', 'success');
     questionInput.focus();
     
     fileInput.value = '';
 
   } catch (err) {
     progressWrap.style.display = 'none';
-    showToast(`❌ ${err.message}`, 'error');
+    showToast(`${err.message}`, 'error');
     console.error(err);
   }
 }
@@ -171,7 +171,7 @@ async function sendQuestion() {
 
   } catch (err) {
     removeTyping(typingId);
-    appendMessage('assistant', `⚠️ ${err.message}`);
+    appendMessage('assistant', `${err.message}`);
     console.error(err);
   } finally {
     isLoading = false;
@@ -234,7 +234,7 @@ function buildSourcesHTML(sources) {
 
   return `
     <div class="sources-wrap">
-      <p class="sources-label">📌 Sources (${sources.length})</p>
+      <p class="sources-label">Sources (${sources.length})</p>
       ${items}
     </div>
   `;
@@ -324,6 +324,6 @@ function showToast(message, type = '') {
     const res = await fetch(`${API_BASE}/health`);
     if (!res.ok) throw new Error();
   } catch {
-    showToast('⚠️ Cannot reach backend. Make sure the server is running on port 8000.', 'error');
+    showToast('Cannot reach backend. Make sure the server is running on port 8000.', 'error');
   }
 })();
