@@ -1,4 +1,8 @@
-const API_BASE = 'http://localhost:8000';
+// Dynamically determine the backend API base URL
+// Use localhost during local development, and your deployed Render URL in production
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:8000'
+  : 'https://docs-qa-backend.onrender.com'; // TODO: Replace with your actual Render URL after deploying
 
 let sessionId    = null;
 let isLoading    = false;
