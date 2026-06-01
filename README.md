@@ -93,6 +93,35 @@ open frontend/index.html        # macOS
 
 ---
 
+## Deploying to Production (Render & Vercel)
+
+Ειδήμονας is designed to be hosted in the cloud with the backend served from Render and the frontend served from Vercel.
+
+### 1. Deploy the Backend to Render
+1. Create a free account at **[Render](https://render.com/)**.
+2. Click **New** -> **Blueprint**.
+3. Select your GitHub repository. Render will automatically parse the `render.yaml` configuration at the root of the project and provision the FastAPI web service.
+4. When prompted, add the `GEMINI_API_KEY` environment variable with your Google Gemini API Key.
+5. Apply the blueprint. Once active, copy the backend URL provided by Render (e.g., `https://docs-qa-backend.onrender.com`).
+
+### 2. Connect the Frontend
+1. Open `frontend/app.js` and locate `API_BASE` at the top of the file:
+   ```javascript
+   const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+     ? 'http://localhost:8000'
+     : 'https://docs-qa-backend.onrender.com';
+   ```
+2. Replace `'https://docs-qa-backend.onrender.com'` with your actual Render URL.
+3. Commit and push the changes to GitHub.
+
+### 3. Deploy the Frontend to Vercel
+1. Create a free account at **[Vercel](https://vercel.com/)**.
+2. Click **Add New** -> **Project** and select your GitHub repository.
+3. In the project configuration settings, set the **Root Directory** to `frontend`.
+4. Click **Deploy**. Vercel will build and host the static files instantly.
+
+---
+
 ## How to Interact with Ειδήμονας
 
 1. Upload your file via the sidebar drag-and-drop or the file selector. Supports .pdf, .docx, and .doc up to 50MB.
