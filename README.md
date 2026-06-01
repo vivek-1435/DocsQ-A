@@ -97,12 +97,20 @@ open frontend/index.html        # macOS
 
 Ειδήμονας is designed to be hosted in the cloud with the backend served from Render and the frontend served from Vercel.
 
-### 1. Deploy the Backend to Render
+### 1. Deploy the Backend to Render (as a Web Service)
 1. Create a free account at **[Render](https://render.com/)**.
-2. Click **New** -> **Blueprint**.
-3. Select your GitHub repository. Render will automatically parse the `render.yaml` configuration at the root of the project and provision the FastAPI web service.
-4. When prompted, add the `GEMINI_API_KEY` environment variable with your Google Gemini API Key.
-5. Apply the blueprint. Once active, copy the backend URL provided by Render (e.g., `https://docs-qa-backend.onrender.com`).
+2. Click **New** -> **Web Service**.
+3. Connect your GitHub repository.
+4. Set the following options in the configuration form:
+   * **Name**: `docs-qa-backend`
+   * **Language/Runtime**: `Python`
+   * **Root Directory**: `backend`
+   * **Build Command**: `pip install -r requirements.txt`
+   * **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+5. Click **Advanced** -> **Add Environment Variable** and define:
+   * **`PYTHON_VERSION`**: `3.11.0`
+   * **`GEMINI_API_KEY`**: `your_gemini_api_key_here`
+6. Click **Create Web Service**. Once deployed, copy the provided Web Service URL (e.g., `https://docs-qa-backend.onrender.com`).
 
 ### 2. Connect the Frontend
 1. Open `frontend/app.js` and locate `API_BASE` at the top of the file:
