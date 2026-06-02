@@ -120,6 +120,49 @@ class RAGPipeline:
         self.doc_name = original_name or Path(file_path).name
 
         documents = self._load_document(file_path)
+        
+        # Check if we successfully extracted any selectable text
+        total_text = ""
+        if documents:
+            total_text = "".join(doc.page_content for doc in documents).strip()
+
+        # If text is empty or extremely short, trigger Gemini Multimodal OCR fallback for PDFs
+        if len(total_text) < 15:
+            ext = Path(file_path).suffix.lower()
+            if ext == ".pdf":
+                print(f"⚠️ Selectable text is empty for {self.doc_name}. Falling back to Gemini Multimodal OCR...")
+                try:
+                    from google import genai
+                    from google.genai import types
+                    
+                    api_key = os.getenv("GEMINI_API_KEY")
+                    client = genai.Client(api_key=api_key)
+                    
+                    with open(file_path, "rb") as f:
+                        file_bytes = f.read()
+                        
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash-lite',
+                        contents=[
+                            types.Part.from_bytes(
+                                data=file_bytes,
+                                mime_type="application/pdf"
+                            ),
+                            "Transcribe all text from this scanned document. Please preserve layout, headers, tables, and write out all text exactly as it appears. Do not summarize or add introduction."
+                        ]
+                    )
+                    
+                    ocr_text = response.text
+                    if ocr_text and ocr_text.strip():
+                        from langchain_core.documents import Document
+                        documents = [Document(page_content=ocr_text, metadata={"source": self.doc_name})]
+                    else:
+                        raise ValueError("Gemini OCR returned empty text.")
+                except Exception as ocr_err:
+                    raise ValueError(f"This PDF document appears to be scanned or image-only, and our fallback Gemini OCR failed: {ocr_err}")
+            else:
+                raise ValueError("No content could be extracted from the document.")
+
         if not documents:
             raise ValueError("No content could be extracted from the document.")
 
