@@ -106,14 +106,14 @@ authToggleBtn.addEventListener("click", (e) => {
     authMode = "signup";
     authTitle.textContent = "Create Account";
     authSubtitle.textContent = "Sign up for a free document intelligence workspace";
-    authSubmitBtn.textContent = "Sign Up";
+    authSubmitBtn.textContent = supabaseClient ? "Sign Up" : "Connecting to backend...";
     authToggleText.textContent = "Already have an account?";
     authToggleBtn.textContent = "Sign In";
   } else {
     authMode = "signin";
     authTitle.textContent = "Welcome Back";
     authSubtitle.textContent = "Sign in to your workspace to resume document Q&A";
-    authSubmitBtn.textContent = "Sign In";
+    authSubmitBtn.textContent = supabaseClient ? "Sign In" : "Connecting to backend...";
     authToggleText.textContent = "Don't have an account?";
     authToggleBtn.textContent = "Create Account";
   }
@@ -183,6 +183,10 @@ async function initApp() {
     // 3. Init Supabase auth client
     initSupabase(config.supabase_url, config.supabase_anon_key);
     console.log("✅ Supabase client created successfully!");
+    
+    // Enable the submit button and restore the text
+    authSubmitBtn.disabled = false;
+    authSubmitBtn.textContent = authMode === "signin" ? "Sign In" : "Sign Up";
     
     // 4. Register Session Observer
     onAuthChange((event, session) => {
