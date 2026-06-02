@@ -1151,3 +1151,58 @@ h3 {
   margin: 12px 0 6px 0;
   color: var(--text-main);
 }
+
+/* ═══════════════════════════════ BACKGROUND INDEXING STYLES ═══════════════════════════════ */
+.indexing-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+  display: inline-block;
+}
+
+.indexing-spinner.inline {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Temp indexing items pulse effect */
+.temp-indexing {
+  animation: temp-pulse 1.8s ease-in-out infinite;
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(99, 102, 241, 0.2);
+}
+
+@keyframes temp-pulse {
+  0%, 100% {
+    opacity: 0.8;
+    border-color: rgba(99, 102, 241, 0.25);
+  }
+  50% {
+    opacity: 1;
+    border-color: rgba(99, 102, 241, 0.45);
+  }
+}
+
+/* Chat area loading placeholder style */
+.indexing-chat-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  color: var(--text-sub);
+  font-size: 0.85rem;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  margin-top: 10px;
+}
+

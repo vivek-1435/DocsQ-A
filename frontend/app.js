@@ -15,6 +15,7 @@ let currentUser = null;
 let activeDocumentId = null;
 let isLoading = false;
 let messageCount = 0;
+const pendingUploads = new Map();
 
 // UI Elements
 const uploadZone = document.getElementById("uploadZone");
@@ -264,77 +265,98 @@ const fileToBase64 = (file) =>
   });
 
 async function uploadFile(file) {
-  setInputEnabled(false);
-
-  progressWrap.style.display = "block";
-  animateProgress(0, 45, 800, "Uploading document to RAG backend…");
-
   // Secure Context UUID Generator Fallback (for HTTP or IP Address access)
   const documentId = (typeof crypto.randomUUID === "function") 
     ? crypto.randomUUID() 
     : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
         (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
       );
+
+  // Register in pending uploads to display instantly in the sidebar
+  pendingUploads.set(documentId, {
+    id: documentId,
+    filename: file.name,
+    created_at: new Date().toISOString()
+  });
+
+  // Instantly auto-select the document
+  activeDocumentId = documentId;
+  
+  // Refresh sidebar to include the pending document, and select it
+  await fetchUserDocuments();
+  selectDocument(documentId, file.name);
+
+  // Clear file input instantly so user can select another file if they wish
+  fileInput.value = "";
+
   const formData = new FormData();
   formData.append("file", file);
 
-  try {
-    animateProgress(45, 85, 1200, "Extracting text & building index…");
+  // Run upload, indexing, and Supabase synchronization asynchronously in the background
+  (async () => {
+    try {
+      console.log(`⏳ Background Ingestion starting for "${file.name}" (ID: ${documentId})`);
 
-    // 1. Concurrently convert file to base64 and upload to backend
-    const base64Promise = fileToBase64(file).catch(err => {
-      console.warn("⚠️ Base64 conversion failed:", err);
-      return "";
-    });
-
-    const backendPromise = fetch(`${API_BASE}/upload?document_id=${documentId}`, {
-      method: "POST",
-      body: formData,
-    }).then(async res => {
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || "RAG indexing failed");
-      }
-      return res.json();
-    });
-
-    // Wait for both concurrent operations to finish
-    const [data, fileDataB64] = await Promise.all([backendPromise, base64Promise]);
-
-    animateProgress(85, 95, 300, "Syncing metadata to database…");
-
-    // Save document metadata & base64 file data directly in Supabase
-    const { error: dbErr } = await supabaseClient
-      .from("documents")
-      .insert({
-        id: documentId,
-        user_id: currentUser.id,
-        filename: file.name,
-        file_path: data.file_path,
-        vector_store_path: data.vector_store_path,
-        file_data: fileDataB64
+      // Concurrently convert file to base64 and upload to backend
+      const base64Promise = fileToBase64(file).catch(err => {
+        console.warn("⚠️ Base64 conversion failed:", err);
+        return "";
       });
 
-    if (dbErr) throw dbErr;
+      const backendPromise = fetch(`${API_BASE}/upload?document_id=${documentId}`, {
+        method: "POST",
+        body: formData,
+      }).then(async res => {
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "RAG indexing failed");
+        }
+        return res.json();
+      });
 
-    animateProgress(95, 100, 200, "Complete!");
-    await sleep(300);
+      const [data, fileDataB64] = await Promise.all([backendPromise, base64Promise]);
 
-    progressWrap.style.display = "none";
-    showToast("Document indexed successfully!", "success");
-    
-    // Refresh documents list & auto-select
-    activeDocumentId = documentId;
-    await fetchUserDocuments();
-    selectDocument(documentId, file.name);
+      // Save document metadata & base64 file data directly in Supabase
+      const { error: dbErr } = await supabaseClient
+        .from("documents")
+        .insert({
+          id: documentId,
+          user_id: currentUser.id,
+          filename: file.name,
+          file_path: data.file_path,
+          vector_store_path: data.vector_store_path,
+          file_data: fileDataB64
+        });
 
-    fileInput.value = "";
-  } catch (err) {
-    progressWrap.style.display = "none";
-    showToast(`${err.message}`, "error");
-    console.error(err);
-    setInputEnabled(activeDocumentId !== null);
-  }
+      if (dbErr) throw dbErr;
+
+      console.log(`✅ Background Ingestion complete for "${file.name}"!`);
+      showToast(`"${file.name}" indexed successfully!`, "success");
+
+      // Remove from pending uploads since indexing is now complete and saved to DB
+      pendingUploads.delete(documentId);
+
+      // Refresh documents list from database and reload the active document view if selected
+      await fetchUserDocuments();
+      if (activeDocumentId === documentId) {
+        selectDocument(documentId, file.name);
+      }
+    } catch (err) {
+      console.error(`❌ Background Ingestion failed for "${file.name}":`, err);
+      showToast(`Failed to index "${file.name}": ${err.message}`, "error");
+
+      // Remove from pending uploads
+      pendingUploads.delete(documentId);
+
+      // Refresh list to remove the failed item
+      await fetchUserDocuments();
+
+      // Reset selection session if the user is still on this failed document
+      if (activeDocumentId === documentId) {
+        resetSession();
+      }
+    }
+  })();
 }
 
 async function fetchUserDocuments() {
@@ -348,15 +370,39 @@ async function fetchUserDocuments() {
 
     if (error) throw error;
 
-    if (!data || data.length === 0) {
+    let allDocs = [];
+
+    // 1. Add pending documents first so they appear at the top
+    pendingUploads.forEach((pendingDoc) => {
+      allDocs.push({
+        id: pendingDoc.id,
+        filename: pendingDoc.filename,
+        created_at: pendingDoc.created_at,
+        isPending: true
+      });
+    });
+
+    // 2. Add database documents, filtering out any that are still in pending status
+    if (data) {
+      data.forEach((doc) => {
+        if (!pendingUploads.has(doc.id)) {
+          allDocs.push({
+            ...doc,
+            isPending: false
+          });
+        }
+      });
+    }
+
+    if (allDocs.length === 0) {
       docList.innerHTML = '<p class="doc-list-empty">No documents uploaded yet.</p>';
       return;
     }
 
     docList.innerHTML = "";
-    data.forEach((doc) => {
+    allDocs.forEach((doc) => {
       const item = document.createElement("div");
-      item.className = `doc-item ${doc.id === activeDocumentId ? "active" : ""}`;
+      item.className = `doc-item ${doc.id === activeDocumentId ? "active" : ""} ${doc.isPending ? "temp-indexing" : ""}`;
       item.dataset.id = doc.id;
 
       const ext = doc.filename.split(".").pop().toLowerCase();
@@ -365,37 +411,53 @@ async function fetchUserDocuments() {
         day: "numeric",
       });
 
-      item.innerHTML = `
-        <div class="doc-item-left">
-          <div class="doc-item-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
+      if (doc.isPending) {
+        item.innerHTML = `
+          <div class="doc-item-left">
+            <div class="doc-item-icon">
+              <div class="indexing-spinner"></div>
+            </div>
+            <div class="doc-item-details">
+              <p class="doc-item-name" title="${escapeHTML(doc.filename)}">${escapeHTML(doc.filename)}</p>
+              <p class="doc-item-date">Indexing...</p>
+            </div>
+          </div>
+        `;
+      } else {
+        item.innerHTML = `
+          <div class="doc-item-left">
+            <div class="doc-item-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+            </div>
+            <div class="doc-item-details">
+              <p class="doc-item-name" title="${escapeHTML(doc.filename)}">${escapeHTML(doc.filename)}</p>
+              <p class="doc-item-date">${ext.toUpperCase()} · ${dateStr}</p>
+            </div>
+          </div>
+          <button class="btn-doc-delete" title="Delete document">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12">
+              <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
             </svg>
-          </div>
-          <div class="doc-item-details">
-            <p class="doc-item-name" title="${escapeHTML(doc.filename)}">${escapeHTML(doc.filename)}</p>
-            <p class="doc-item-date">${ext.toUpperCase()} · ${dateStr}</p>
-          </div>
-        </div>
-        <button class="btn-doc-delete" title="Delete document">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12">
-            <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/>
-          </svg>
-        </button>
-      `;
+          </button>
+        `;
+      }
 
       item.addEventListener("click", (e) => {
         if (e.target.closest(".btn-doc-delete")) return;
         selectDocument(doc.id, doc.filename);
       });
 
-      item.querySelector(".btn-doc-delete").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (confirm(`Are you sure you want to delete "${doc.filename}"? This will delete all chat history.`)) {
-          await deleteDocument(doc.id);
-        }
-      });
+      if (!doc.isPending) {
+        item.querySelector(".btn-doc-delete").addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (confirm(`Are you sure you want to delete "${doc.filename}"? This will delete all chat history.`)) {
+            await deleteDocument(doc.id);
+          }
+        });
+      }
 
       docList.appendChild(item);
     });
@@ -412,9 +474,20 @@ async function selectDocument(docId, filename) {
     item.classList.toggle("active", item.dataset.id === docId);
   });
 
-  chatSubtitle.textContent = `Active Document: ${filename}`;
+  const isPending = pendingUploads.has(docId);
+  chatSubtitle.textContent = isPending ? `Active Document: ${filename} (Indexing...)` : `Active Document: ${filename}`;
   welcomeScreen.style.display = "none";
   setInputEnabled(true);
+
+  if (isPending) {
+    messagesList.innerHTML = `
+      <div class="indexing-chat-status">
+        <div class="indexing-spinner inline"></div>
+        <span>Analyzing document content. You can start typing your questions...</span>
+      </div>
+    `;
+    return;
+  }
 
   // Load chat history from Supabase
   messagesList.innerHTML = '<p class="doc-list-empty">Loading chat history…</p>';
@@ -514,6 +587,12 @@ sendBtn.addEventListener("click", sendQuestion);
 async function sendQuestion() {
   const question = questionInput.value.trim();
   if (!question || isLoading || !activeDocumentId || !currentUser) return;
+
+  // Block question submission if the active document is still indexing in the background
+  if (pendingUploads.has(activeDocumentId)) {
+    showToast("Please wait for indexing to complete.", "error");
+    return;
+  }
 
   isLoading = true;
   setInputEnabled(false);
