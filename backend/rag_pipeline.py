@@ -5,12 +5,15 @@ from pathlib import Path
 # suppress langchain deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# Import custom modular components
+from embeddings import ParallelGoogleGenerativeAIEmbeddings
+from document_loaders import load_document
 
 SYSTEM_PROMPT = """\
 You are an expert, highly intelligent AI assistant analyzing the provided document context.
@@ -29,75 +32,6 @@ Context:
 
 def _format_docs(docs: list) -> str:
     return "\n\n---\n\n".join(doc.page_content for doc in docs)
-
-
-class ParallelGoogleGenerativeAIEmbeddings(GoogleGenerativeAIEmbeddings):
-    def embed_documents(
-        self,
-        texts: list[str],
-        *,
-        batch_size: int = 100,
-        task_type: str | None = None,
-        titles: list[str] | None = None,
-        output_dimensionality: int | None = None,
-    ) -> list[list[float]]:
-        import time
-        import re
-        import random
-        from concurrent.futures import ThreadPoolExecutor
-
-        # Calculate dynamic batch size targeting max 150,000 characters per batch
-        if texts:
-            chunk_len = len(texts[0])
-            dynamic_batch_size = max(1, min(100, int(150000 / chunk_len)))
-        else:
-            dynamic_batch_size = 100
-
-        print(f"📊 Dynamic batch size: first chunk length is {chunk_len if texts else 0} chars. Using batch_size={dynamic_batch_size}")
-        batches = [texts[i:i + dynamic_batch_size] for i in range(0, len(texts), dynamic_batch_size)]
-        
-        def _embed_batch(batch_texts):
-            retries = 6
-            for attempt in range(retries):
-                try:
-                    return super(ParallelGoogleGenerativeAIEmbeddings, self).embed_documents(
-                        batch_texts,
-                        batch_size=len(batch_texts),
-                        task_type=task_type,
-                        output_dimensionality=output_dimensionality
-                    )
-                except Exception as e:
-                    err_str = str(e)
-                    is_rate_limit = False
-                    if hasattr(e, 'status_code') and e.status_code == 429:
-                        is_rate_limit = True
-                    elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        is_rate_limit = True
-                    
-                    if is_rate_limit and attempt < retries - 1:
-                        sleep_time = (2.5 ** attempt) + 1.0 + random.uniform(0.5, 3.5)
-                        match = re.search(r"retry in ([\d\.]+)s", err_str)
-                        if match:
-                            sleep_time = float(match.group(1)) + 1.0 + random.uniform(0.5, 2.5)
-                        print(f"\n⚠️ Rate limit (429) hit. Attempt {attempt+1}/{retries}. Sleeping {sleep_time:.2f}s...")
-                        time.sleep(sleep_time)
-                    else:
-                        raise e
-            
-        results = []
-        max_workers = 5
-        print(f"Embedding {len(texts)} chunks in parallel with {max_workers} threads...")
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for batch in batches:
-                futures.append(executor.submit(_embed_batch, batch))
-                # Add a 0.5s pacing delay to prevent rate limit spikes
-                time.sleep(0.5)
-                
-            for future in futures:
-                results.extend(future.result())
-                
-        return results
 
 
 class RAGPipeline:
@@ -119,90 +53,10 @@ class RAGPipeline:
         self.retriever = None
         self.doc_name = ""
 
-    def _load_document(self, file_path: str) -> list:
-        from langchain_core.documents import Document
-        ext = Path(file_path).suffix.lower()
-
-        if ext == ".pdf":
-            from langchain_community.document_loaders import PyPDFLoader
-            return PyPDFLoader(file_path).load()
-
-        elif ext == ".docx":
-            from langchain_community.document_loaders import Docx2txtLoader
-            return Docx2txtLoader(file_path).load()
-
-        elif ext == ".txt":
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-            except UnicodeDecodeError:
-                with open(file_path, "r", encoding="latin-1") as f:
-                    content = f.read()
-            return [Document(page_content=content, metadata={"source": Path(file_path).name})]
-
-        elif ext == ".csv":
-            import csv
-            text_lines = []
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
-                        if row_vals:
-                            text_lines.append(" | ".join(row_vals))
-            except UnicodeDecodeError:
-                with open(file_path, "r", encoding="latin-1") as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
-                        if row_vals:
-                            text_lines.append(" | ".join(row_vals))
-            content = "\n".join(text_lines)
-            return [Document(page_content=content, metadata={"source": Path(file_path).name})]
-
-        elif ext == ".xlsx":
-            import openpyxl
-            wb = openpyxl.load_workbook(file_path, data_only=True)
-            text_lines = []
-            for sheet_name in wb.sheetnames:
-                sheet = wb[sheet_name]
-                text_lines.append(f"--- Sheet: {sheet_name} ---")
-                for row in sheet.iter_rows(values_only=True):
-                    row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
-                    if row_vals:
-                        text_lines.append(" | ".join(row_vals))
-            content = "\n".join(text_lines)
-            return [Document(page_content=content, metadata={"source": Path(file_path).name})]
-
-        elif ext == ".pptx":
-            from pptx import Presentation
-            prs = Presentation(file_path)
-            text_lines = []
-            for i, slide in enumerate(prs.slides):
-                text_lines.append(f"--- Slide {i+1} ---")
-                for shape in slide.shapes:
-                    try:
-                        if hasattr(shape, "text") and shape.text.strip():
-                            text_lines.append(shape.text.strip())
-                        if hasattr(shape, "has_table") and shape.has_table:
-                            table = shape.table
-                            for row in table.rows:
-                                row_vals = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                                if row_vals:
-                                    text_lines.append(" | ".join(row_vals))
-                    except Exception as shape_err:
-                        # Defensive: Skip any corrupted or non-standard PPTX vector shapes
-                        print(f"Skipping shape in PPTX slide due to error: {shape_err}")
-                        continue
-            content = "\n".join(text_lines)
-            return [Document(page_content=content, metadata={"source": Path(file_path).name})]
-
-        raise ValueError(f"Unsupported file type: {ext}")
-
     def process_document(self, file_path: str, original_name: str = ""):
         self.doc_name = original_name or Path(file_path).name
 
-        documents = self._load_document(file_path)
+        documents = load_document(file_path)
         
         # Check if we successfully extracted any selectable text
         total_text = ""
@@ -344,4 +198,3 @@ class RAGPipeline:
             "answer": answer,
             "sources": sources,
         }
-
