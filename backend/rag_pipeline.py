@@ -31,13 +31,82 @@ def _format_docs(docs: list) -> str:
     return "\n\n---\n\n".join(doc.page_content for doc in docs)
 
 
+class ParallelGoogleGenerativeAIEmbeddings(GoogleGenerativeAIEmbeddings):
+    def embed_documents(
+        self,
+        texts: list[str],
+        *,
+        batch_size: int = 100,
+        task_type: str | None = None,
+        titles: list[str] | None = None,
+        output_dimensionality: int | None = None,
+    ) -> list[list[float]]:
+        import time
+        import re
+        import random
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Calculate dynamic batch size targeting max 150,000 characters per batch
+        if texts:
+            chunk_len = len(texts[0])
+            dynamic_batch_size = max(1, min(100, int(150000 / chunk_len)))
+        else:
+            dynamic_batch_size = 100
+
+        print(f"📊 Dynamic batch size: first chunk length is {chunk_len if texts else 0} chars. Using batch_size={dynamic_batch_size}")
+        batches = [texts[i:i + dynamic_batch_size] for i in range(0, len(texts), dynamic_batch_size)]
+        
+        def _embed_batch(batch_texts):
+            retries = 6
+            for attempt in range(retries):
+                try:
+                    return super(ParallelGoogleGenerativeAIEmbeddings, self).embed_documents(
+                        batch_texts,
+                        batch_size=len(batch_texts),
+                        task_type=task_type,
+                        output_dimensionality=output_dimensionality
+                    )
+                except Exception as e:
+                    err_str = str(e)
+                    is_rate_limit = False
+                    if hasattr(e, 'status_code') and e.status_code == 429:
+                        is_rate_limit = True
+                    elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        is_rate_limit = True
+                    
+                    if is_rate_limit and attempt < retries - 1:
+                        sleep_time = (2.5 ** attempt) + 1.0 + random.uniform(0.5, 3.5)
+                        match = re.search(r"retry in ([\d\.]+)s", err_str)
+                        if match:
+                            sleep_time = float(match.group(1)) + 1.0 + random.uniform(0.5, 2.5)
+                        print(f"\n⚠️ Rate limit (429) hit. Attempt {attempt+1}/{retries}. Sleeping {sleep_time:.2f}s...")
+                        time.sleep(sleep_time)
+                    else:
+                        raise e
+            
+        results = []
+        max_workers = 5
+        print(f"Embedding {len(texts)} chunks in parallel with {max_workers} threads...")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for batch in batches:
+                futures.append(executor.submit(_embed_batch, batch))
+                # Add a 0.5s pacing delay to prevent rate limit spikes
+                time.sleep(0.5)
+                
+            for future in futures:
+                results.extend(future.result())
+                
+        return results
+
+
 class RAGPipeline:
     def __init__(self):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables")
 
-        self.embeddings = GoogleGenerativeAIEmbeddings(
+        self.embeddings = ParallelGoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-001",
             google_api_key=api_key,
         )
@@ -168,20 +237,41 @@ class RAGPipeline:
                     
                     ocr_text = response.text
                     if ocr_text and ocr_text.strip():
-                        from langchain_core.documents import Document
-                        documents = [Document(page_content=ocr_text, metadata={"source": self.doc_name})]
+                        total_text = ocr_text.strip()
                 except Exception as ocr_err:
                     print(f"⚠️ Gemini OCR fallback failed: {ocr_err}")
 
         # Final foolproof check: if no content could be extracted, use a placeholder
-        if not documents:
-            from langchain_core.documents import Document
-            placeholder_text = f"This document '{self.doc_name}' contains no readable text or is empty."
-            documents = [Document(page_content=placeholder_text, metadata={"source": self.doc_name})]
+        if not total_text:
+            total_text = f"This document '{self.doc_name}' contains no readable text or is empty."
+
+        # Truncate content to protect API limit and ensure fast response times
+        MAX_CHARS = 1500000
+        if len(total_text) > MAX_CHARS:
+            print(f"⚠️ Document content length ({len(total_text)}) exceeds MAX_CHARS ({MAX_CHARS}). Truncating to optimize speed.")
+            total_text = total_text[:MAX_CHARS]
+
+        # Re-wrap content in a single Document object for RecursiveCharacterTextSplitter
+        from langchain_core.documents import Document
+        documents = [Document(page_content=total_text, metadata={"source": self.doc_name})]
+        total_chars = len(total_text)
+
+        # Adaptive chunking thresholds capped at 8000 for gemini-embedding-001 limits
+        if total_chars < 500 * 1024: # Under 500 KB
+            chunk_size = 1500
+            chunk_overlap = 150
+        elif total_chars < 2 * 1024 * 1024: # 500 KB to 2 MB
+            chunk_size = 4000
+            chunk_overlap = 400
+        else: # Over 2 MB (capped at 8000 chars)
+            chunk_size = 8000
+            chunk_overlap = 800
+            
+        print(f"📊 Adaptive chunking: document character count is {total_chars}. Using chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
 
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=150,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
         chunks = splitter.split_documents(documents)
         
