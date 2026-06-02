@@ -149,4 +149,10 @@ open frontend/index.html        # macOS
 ## Session and Safety Notes
 
 * **Persistent Backups & Auto-Healing**: Document metadata and base64 backups are stored securely in your Supabase database. If the backend server hibernates or restarts (typical of free-tier cloud hosting like Render), the backend will automatically and silently rebuild the FAISS vector index from the database backup upon your next query.
+  * *Note for Large Files*: If you are working with extremely large documents (> 10MB), fetching the base64 backup from the database may hit PostgreSQL's default PostgREST statement timeout. To prevent this, run the following SQL command in your Supabase SQL Editor:
+    ```sql
+    alter role authenticator set statement_timeout = '60s';
+    alter role anon set statement_timeout = '60s';
+    alter role authenticated set statement_timeout = '60s';
+    ```
 * **Privacy First**: Your files are stored securely and processed using in-memory FAISS indexing. Only relevant retrieved context chunks are sent to Google's Gemini API to synthesize answers.

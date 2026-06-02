@@ -365,7 +365,7 @@ async function fetchUserDocuments() {
   try {
     const { data, error } = await supabaseClient
       .from("documents")
-      .select("*")
+      .select("id, filename, file_path, vector_store_path, created_at")
       .order("created_at", { ascending: false });
 
     if (error) throw error;
