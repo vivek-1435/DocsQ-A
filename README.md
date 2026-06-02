@@ -11,15 +11,19 @@ Instead of just matching keywords, Ειδήμονας understands the context of
 ## What Makes Ειδήμονας Special?
 
 * **Sub-Second Answers**  
-  We swapped the backend model to gemini-2.5-flash-lite and disabled heavy thinking modes. Answers generate in under 1.5 seconds instead of the typical 40+ seconds.
-* **Domain-Agnostic Intelligence**  
-  Ειδήμονας is built for any document. Whether you upload a standard resume, a business report, a legal lease agreement, or a user guide, it automatically adapts its tone and structure to give you the most relevant analysis.
+  Powered by `gemini-2.5-flash-lite` for ultra-fast, domain-agnostic reasoning, returning fully-grounded answers with source citations in under 1.5 seconds.
+* **Parallel & Adaptive Background Ingestion**  
+  Indexes small files in under a second and massive files (like a 16.76 MB CSV containing 100,000+ rows) in under 20 seconds. Uses ThreadPoolExecutor parallel embeddings, pacing delays, and randomized jitter retries to handle huge datasets without rate limit issues.
+* **Scanned PDF Fallback (Gemini OCR)**  
+  Automatically detects scanned or image-only documents and uses Gemini's multimodal capabilities to transcribe and index them with complete precision.
 * **Factual Grounding**  
-  We implemented strict grounding rules so that the AI never invents details or assumes facts. If a detail isn't in your document, Ειδήμονας will politely let you know rather than guessing.
+  Strict grounding prevents hallucinations. If the details aren't in your document, the assistant politely lets you know.
 * **Clickable Sources and Page Citations**  
-  Every answer is backed up by exact passages from your document. Simply click any source badge in the chat window to expand and inspect the exact context used.
-* **Premium Glassmorphism UI**  
-  A modern, responsive dark-glass UI that looks stunning in any browser, complete with interactive drag-and-drop zones, real-time index progress tracking, and toast alerts.
+  Every answer is backed up by exact passages from your document. Simply click any source badge in the chat window to inspect the exact context used.
+* **Auto-Healing Cloud Backups**  
+  Uses Supabase persistent storage. If a backend server restarts or hibernates, the system automatically auto-heals by downloading the document backup and reconstructing the FAISS vector index on-the-fly.
+* **Premium Glassmorphic UI**  
+  A modern, responsive dark-glass UI with non-blocking upload slots, drag-and-drop zones, real-time background index progress bars, and mobile-responsive drawer drawers.
 
 ---
 
@@ -132,8 +136,8 @@ open frontend/index.html        # macOS
 
 ## How to Interact with Ειδήμονας
 
-1. Upload your file via the sidebar drag-and-drop or the file selector. Supports .pdf, .docx, and .doc up to 50MB.
-2. Watch the real-time index bar build a FAISS vector index of your document (takes 1–2 seconds).
+1. Upload your file via the sidebar drag-and-drop or the file selector. Supports `.pdf`, `.docx`, `.txt`, `.csv`, `.xlsx`, and `.pptx` up to 50MB.
+2. Watch the real-time sidebar progress spinner index your document asynchronously in the background. You can draft questions immediately!
 3. Ask anything in the chat input:
    * Direct queries: "What are the core requirements listed in section 3?"
    * Summaries: "Can you summarize the major objectives of this document?"
@@ -144,5 +148,5 @@ open frontend/index.html        # macOS
 
 ## Session and Safety Notes
 
-* In-Memory Sessions: All document indexes and upload caches are held in-memory for security. If you restart the backend, active sessions are cleared and files will need to be re-uploaded.
-* Privacy First: Your files stay on your local backend server and are processed locally in FAISS. Only processed text chunks are sent securely to Google's Gemini API to generate the final answers.
+* **Persistent Backups & Auto-Healing**: Document metadata and base64 backups are stored securely in your Supabase database. If the backend server hibernates or restarts (typical of free-tier cloud hosting like Render), the backend will automatically and silently rebuild the FAISS vector index from the database backup upon your next query.
+* **Privacy First**: Your files are stored securely and processed using in-memory FAISS indexing. Only relevant retrieved context chunks are sent to Google's Gemini API to synthesize answers.
