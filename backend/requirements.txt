@@ -11,3 +11,5 @@ python-docx
 docx2txt
 faiss-cpu
 pydantic
+openpyxl>=3.1.0
+python-pptx>=0.6.21
