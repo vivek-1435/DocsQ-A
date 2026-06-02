@@ -274,15 +274,16 @@ async function uploadFile(file) {
     try {
       console.log(`⏳ Background Ingestion starting for "${file.name}" (ID: ${documentId})`);
 
+      // Convert file to base64 in parallel
       const base64Promise = fileToBase64(file).catch(err => {
         console.warn("⚠️ Base64 conversion failed:", err);
         return "";
       });
 
-      const backendPromise = uploadToBackend(documentId, formData);
-      const [data, fileDataB64] = await Promise.all([backendPromise, base64Promise]);
+      // Await backend indexing first to make the document queryable ASAP
+      const data = await uploadToBackend(documentId, formData);
 
-      // Save document backup details directly in Supabase
+      // Save document metadata directly in Supabase (with file_data as null to avoid blockages)
       const { error: dbErr } = await supabaseClient
         .from("documents")
         .insert({
@@ -291,7 +292,7 @@ async function uploadFile(file) {
           filename: file.name,
           file_path: data.file_path,
           vector_store_path: data.vector_store_path,
-          file_data: fileDataB64
+          file_data: null
         });
 
       if (dbErr) throw dbErr;
@@ -299,12 +300,31 @@ async function uploadFile(file) {
       console.log(`✅ Background Ingestion complete for "${file.name}"!`);
       showToast(`"${file.name}" indexed successfully!`, "success");
 
+      // Stop the UI loading spinner immediately
       pendingUploads.delete(documentId);
 
       await fetchUserDocuments();
       if (activeDocumentId === documentId) {
         selectDocument(documentId, file.name);
       }
+
+      // Perform cloud base64 backup upload silently out-of-band
+      (async () => {
+        try {
+          const fileDataB64 = await base64Promise;
+          if (fileDataB64) {
+            console.log(`☁️ Starting out-of-band database backup upload for "${file.name}"...`);
+            const { error: backupErr } = await supabaseClient
+              .from("documents")
+              .update({ file_data: fileDataB64 })
+              .eq("id", documentId);
+            if (backupErr) throw backupErr;
+            console.log(`☁️ Cloud database backup completed for "${file.name}".`);
+          }
+        } catch (backupErr) {
+          console.warn(`⚠️ Cloud backup upload failed for "${file.name}":`, backupErr);
+        }
+      })();
     } catch (err) {
       console.error(`❌ Background Ingestion failed for "${file.name}":`, err);
       showToast(`Failed to index "${file.name}": ${err.message}`, "error");
