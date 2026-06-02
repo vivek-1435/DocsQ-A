@@ -48,14 +48,22 @@ We kept the architecture lightweight, modern, and highly modular:
 RagPdfView/
 ├── backend/
 │   ├── main.py            ← FastAPI entrypoint & sessions controller
-│   ├── rag_pipeline.py    ← RAG pipeline core (embed, store, retrieve, answer)
+│   ├── rag_pipeline.py    ← RAG orchestrator core (FAISS, splitting)
+│   ├── embeddings.py      ← ThreadPool parallel embedding generator (custom class)
+│   ├── document_loaders.py ← Multi-format document parser helper
 │   ├── requirements.txt   ← Python backend dependencies
 │   ├── .env               ← Active environment variables (API Key)
 │   └── uploads/           ← Stores uploaded files (auto-created)
 └── frontend/
     ├── index.html         ← Premium Dark-Glass UI
     ├── style.css          ← Responsive glassmorphism styling
-    └── app.js             ← Frontend API connector & chat rendering
+    └── js/                ← Modular ES6 frontend scripts
+        ├── config.js      ← Dynamic endpoint base URL configurations
+        ├── ui.js          ← DOM references, loader widgets, toast alerts
+        ├── auth.js        ← Supabase auth state and observer client
+        ├── api.js         ← FastAPI HTTP requests connector
+        ├── chat.js        ← Markdown formatter, chat typing cards
+        └── app.js         ← Main module entrypoint & dropzone bindings
 ```
 
 ---
