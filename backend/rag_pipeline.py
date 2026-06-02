@@ -72,8 +72,24 @@ class RAGPipeline:
             return [Document(page_content=content, metadata={"source": Path(file_path).name})]
 
         elif ext == ".csv":
-            from langchain_community.document_loaders.csv_loader import CSVLoader
-            return CSVLoader(file_path, encoding="utf-8").load()
+            import csv
+            text_lines = []
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+                        if row_vals:
+                            text_lines.append(" | ".join(row_vals))
+            except UnicodeDecodeError:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+                        if row_vals:
+                            text_lines.append(" | ".join(row_vals))
+            content = "\n".join(text_lines)
+            return [Document(page_content=content, metadata={"source": Path(file_path).name})]
 
         elif ext == ".xlsx":
             import openpyxl
