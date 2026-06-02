@@ -652,3 +652,27 @@ if (menuToggleBtn && sidebar && sidebarOverlay) {
     }
   });
 }
+
+// Handle mobile virtual keyboard and viewport height dynamically
+if (window.visualViewport) {
+  const updateViewportHeight = () => {
+    const height = window.visualViewport.height;
+    document.documentElement.style.setProperty("--viewport-height", `${height}px`);
+    
+    // Auto scroll chat to the bottom when layout bounds change
+    if (document.activeElement === questionInput) {
+      setTimeout(scrollToBottom, 50);
+    }
+  };
+
+  window.visualViewport.addEventListener("resize", updateViewportHeight);
+  window.visualViewport.addEventListener("scroll", updateViewportHeight);
+  
+  // Run once initially
+  updateViewportHeight();
+}
+
+// Ensure smooth scroll to bottom when question input receives focus
+questionInput.addEventListener("focus", () => {
+  setTimeout(scrollToBottom, 150);
+});
