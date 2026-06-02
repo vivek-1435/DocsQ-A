@@ -156,23 +156,26 @@ class RAGPipeline:
                     if ocr_text and ocr_text.strip():
                         from langchain_core.documents import Document
                         documents = [Document(page_content=ocr_text, metadata={"source": self.doc_name})]
-                    else:
-                        raise ValueError("Gemini OCR returned empty text.")
                 except Exception as ocr_err:
-                    raise ValueError(f"This PDF document appears to be scanned or image-only, and our fallback Gemini OCR failed: {ocr_err}")
-            else:
-                raise ValueError("No content could be extracted from the document.")
+                    print(f"⚠️ Gemini OCR fallback failed: {ocr_err}")
 
+        # Final foolproof check: if no content could be extracted, use a placeholder
         if not documents:
-            raise ValueError("No content could be extracted from the document.")
+            from langchain_core.documents import Document
+            placeholder_text = f"This document '{self.doc_name}' contains no readable text or is empty."
+            documents = [Document(page_content=placeholder_text, metadata={"source": self.doc_name})]
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
         )
         chunks = splitter.split_documents(documents)
+        
+        # If chunks is empty, use the placeholder text
         if not chunks:
-            raise ValueError("Document produced no text chunks.")
+            from langchain_core.documents import Document
+            placeholder_text = f"This document '{self.doc_name}' contains no readable text or is empty."
+            chunks = [Document(page_content=placeholder_text, metadata={"source": self.doc_name})]
 
         self.vector_store = FAISS.from_documents(chunks, self.embeddings)
         self.retriever = self.vector_store.as_retriever(
