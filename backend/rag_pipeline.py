@@ -10,7 +10,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 
 
 SYSTEM_PROMPT = """\
@@ -49,7 +48,6 @@ class RAGPipeline:
         )
         self.vector_store = None
         self.retriever = None
-        self.chain = None
         self.doc_name = ""
 
     def _load_document(self, file_path: str) -> list:
@@ -182,20 +180,6 @@ class RAGPipeline:
             search_type="similarity",
             search_kwargs={"k": 6},
         )
-        self._build_chain()
-
-    def _build_chain(self):
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", SYSTEM_PROMPT),
-                ("human", "{question}"),
-            ]
-        )
-        retrieve_and_pass = RunnableParallel(
-            context=self.retriever | _format_docs,
-            question=RunnablePassthrough(),
-        )
-        self.chain = retrieve_and_pass | prompt | self.llm | StrOutputParser()
 
     def save_index(self, folder_path: str):
         if self.vector_store:
@@ -213,7 +197,6 @@ class RAGPipeline:
             search_type="similarity",
             search_kwargs={"k": 6},
         )
-        self._build_chain()
 
     def ask(self, question: str) -> dict:
         if not self.retriever:
