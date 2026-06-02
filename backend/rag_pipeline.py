@@ -38,7 +38,7 @@ class RAGPipeline:
             raise ValueError("GEMINI_API_KEY not found in environment variables")
 
         self.embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-001",
+            model="models/text-embedding-004",
             google_api_key=api_key,
         )
         self.llm = ChatGoogleGenerativeAI(
@@ -164,8 +164,8 @@ class RAGPipeline:
             documents = [Document(page_content=placeholder_text, metadata={"source": self.doc_name})]
 
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=1500,
+            chunk_overlap=150,
         )
         chunks = splitter.split_documents(documents)
         

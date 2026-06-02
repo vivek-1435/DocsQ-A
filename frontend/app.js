@@ -267,7 +267,7 @@ async function uploadFile(file) {
   setInputEnabled(false);
 
   progressWrap.style.display = "block";
-  animateProgress(0, 45, 1200, "Uploading document to RAG backend…");
+  animateProgress(0, 45, 800, "Uploading document to RAG backend…");
 
   // Secure Context UUID Generator Fallback (for HTTP or IP Address access)
   const documentId = (typeof crypto.randomUUID === "function") 
@@ -279,29 +279,29 @@ async function uploadFile(file) {
   formData.append("file", file);
 
   try {
-    animateProgress(45, 80, 2000, "Extracting text & building index…");
+    animateProgress(45, 85, 1200, "Extracting text & building index…");
 
-    // Call stateless RAG backend to build FAISS index locally
-    const res = await fetch(`${API_BASE}/upload?document_id=${documentId}`, {
-      method: "POST",
-      body: formData,
+    // 1. Concurrently convert file to base64 and upload to backend
+    const base64Promise = fileToBase64(file).catch(err => {
+      console.warn("⚠️ Base64 conversion failed:", err);
+      return "";
     });
 
-    const data = await res.ok ? await res.json() : null;
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.detail || "RAG indexing failed");
-    }
+    const backendPromise = fetch(`${API_BASE}/upload?document_id=${documentId}`, {
+      method: "POST",
+      body: formData,
+    }).then(async res => {
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || "RAG indexing failed");
+      }
+      return res.json();
+    });
 
-    animateProgress(80, 95, 600, "Syncing metadata & file data to database…");
+    // Wait for both concurrent operations to finish
+    const [data, fileDataB64] = await Promise.all([backendPromise, base64Promise]);
 
-    // Convert file to base64 for persistent backup in the database
-    let fileDataB64 = "";
-    try {
-      fileDataB64 = await fileToBase64(file);
-    } catch (b64Err) {
-      console.warn("⚠️ Base64 conversion failed, document won't have cloud backup:", b64Err);
-    }
+    animateProgress(85, 95, 300, "Syncing metadata to database…");
 
     // Save document metadata & base64 file data directly in Supabase
     const { error: dbErr } = await supabaseClient
@@ -317,8 +317,8 @@ async function uploadFile(file) {
 
     if (dbErr) throw dbErr;
 
-    animateProgress(95, 100, 300, "Complete!");
-    await sleep(400);
+    animateProgress(95, 100, 200, "Complete!");
+    await sleep(300);
 
     progressWrap.style.display = "none";
     showToast("Document indexed successfully!", "success");
