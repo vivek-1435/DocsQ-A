@@ -10,9 +10,27 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from supabase import create_client, Client
+
 from rag_pipeline import RAGPipeline
 
-app = FastAPI(title="Stateless RAG Document Q&A API", version="2.2.0")
+app = FastAPI(title="Stateless RAG Document Q&A API", version="2.5.0")
+
+# Initialize Supabase client
+supabase_url = os.getenv("SUPABASE_URL", "").strip()
+supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
+
+# Sanitize URL if needed
+if supabase_url:
+    supabase_url = supabase_url.replace("/rest/v1", "").rstrip("/")
+
+supabase_client: Client = None
+if supabase_url and supabase_anon_key:
+    try:
+        supabase_client = create_client(supabase_url, supabase_anon_key)
+        print("✅ Backend Supabase client initialized successfully!")
+    except Exception as init_err:
+        print(f"⚠️ Failed to initialize backend Supabase client: {init_err}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +55,7 @@ loaded_pipelines: dict[str, RAGPipeline] = {}
 class QuestionRequest(BaseModel):
     document_id: str
     question: str
+    token: str = None
 
 
 @app.get("/health")
@@ -109,14 +128,52 @@ async def ask_question(req: QuestionRequest):
     else:
         # Load index on-demand from disk
         vector_store_path = VECTOR_STORE_DIR / document_id
-        if vector_store_path.exists():
+        
+        # If the local index is missing, attempt to reconstruct it from the Supabase backup
+        if not vector_store_path.exists() and supabase_client and req.token:
+            print(f"🔄 Vector store for {document_id} is missing from backend disk. Attempting auto-rebuild from database...")
+            try:
+                # Clone the client state and set postgrest auth header with the user's JWT
+                supabase_client.postgrest.auth(req.token)
+                
+                # Fetch filename and raw file data (base64 string) from Supabase
+                res = supabase_client.table("documents").select("filename, file_data").eq("id", document_id).execute()
+                
+                if res.data:
+                    doc_record = res.data[0]
+                    filename = doc_record.get("filename")
+                    file_data_b64 = doc_record.get("file_data")
+                    
+                    if file_data_b64:
+                        import base64
+                        file_bytes = base64.b64decode(file_data_b64)
+                        ext = Path(filename).suffix.lower()
+                        saved_path = UPLOAD_DIR / f"{document_id}{ext}"
+                        
+                        # Write raw file back to disk
+                        with open(saved_path, "wb") as f:
+                            f.write(file_bytes)
+                            
+                        # Process and reconstruct vector store
+                        pipeline = RAGPipeline()
+                        pipeline.process_document(str(saved_path), original_name=filename)
+                        pipeline.save_index(str(vector_store_path))
+                        loaded_pipelines[document_id] = pipeline
+                        print(f"✅ Successfully reconstructed vector index for {filename}!")
+            except Exception as rebuild_err:
+                print(f"⚠️ Failed to auto-reconstruct index for {document_id} from database: {rebuild_err}")
+
+        # Try standard local load
+        if not pipeline and vector_store_path.exists():
             try:
                 pipeline = RAGPipeline()
                 pipeline.load_index(str(vector_store_path))
                 loaded_pipelines[document_id] = pipeline
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to load vector index: {e}")
-        else:
+
+        # If still missing, inform the user
+        if not pipeline:
             raise HTTPException(
                 status_code=404, 
                 detail="Document index not found on backend. Please re-upload the document."

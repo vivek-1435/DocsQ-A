@@ -1,4 +1,4 @@
-console.log("🚀 Ειδήμονας: app.js v9.0 loaded successfully!");
+console.log("🚀 Ειδήμονας: app.js v10.0 loaded successfully!");
 
 // Dynamically determine the backend API base URL
 const API_BASE =
@@ -254,6 +254,15 @@ function handleFile(file) {
   uploadFile(file);
 }
 
+// Convert a file to a Base64 string safely
+const fileToBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = (error) => reject(error);
+  });
+
 async function uploadFile(file) {
   setInputEnabled(false);
 
@@ -284,9 +293,17 @@ async function uploadFile(file) {
       throw new Error(errData.detail || "RAG indexing failed");
     }
 
-    animateProgress(80, 95, 600, "Syncing metadata to database…");
+    animateProgress(80, 95, 600, "Syncing metadata & file data to database…");
 
-    // Save document metadata directly in Supabase
+    // Convert file to base64 for persistent backup in the database
+    let fileDataB64 = "";
+    try {
+      fileDataB64 = await fileToBase64(file);
+    } catch (b64Err) {
+      console.warn("⚠️ Base64 conversion failed, document won't have cloud backup:", b64Err);
+    }
+
+    // Save document metadata & base64 file data directly in Supabase
     const { error: dbErr } = await supabaseClient
       .from("documents")
       .insert({
@@ -294,7 +311,8 @@ async function uploadFile(file) {
         user_id: currentUser.id,
         filename: file.name,
         file_path: data.file_path,
-        vector_store_path: data.vector_store_path
+        vector_store_path: data.vector_store_path,
+        file_data: fileDataB64
       });
 
     if (dbErr) throw dbErr;
@@ -519,13 +537,26 @@ async function sendQuestion() {
       });
     if (userMsgErr) throw userMsgErr;
 
-    // 2. Fetch RAG response from stateless backend
+    // 2. Fetch active session token to authorize the backend rebuild
+    let sessionToken = null;
+    try {
+      const { data: { session } } = await supabaseClient.auth.getSession();
+      if (session) sessionToken = session.access_token;
+    } catch (sessionErr) {
+      console.warn("⚠️ Could not retrieve active session token:", sessionErr);
+    }
+
+    // 3. Fetch RAG response from stateless backend
     const res = await fetch(`${API_BASE}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ document_id: activeDocumentId, question }),
+      body: JSON.stringify({ 
+        document_id: activeDocumentId, 
+        question: question,
+        token: sessionToken 
+      }),
     });
 
     const data = await res.json();
