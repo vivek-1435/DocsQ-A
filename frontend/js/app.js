@@ -470,29 +470,51 @@ async function selectDocument(docId, filename) {
 }
 
 async function deleteDocument(docId) {
-  try {
-    showToast("Deleting document files...", "");
-    
-    // 1. Backend delete
-    await deleteBackendDocument(docId);
-
-    // 2. Supabase delete
-    const { error } = await supabaseClient
-      .from("documents")
-      .delete()
-      .eq("id", docId);
-
-    if (error) throw error;
-
-    showToast("Document deleted successfully.", "success");
-    if (activeDocumentId === docId) {
-      resetSession();
-    }
-    fetchUserDocuments();
-  } catch (err) {
-    console.error("❌ Failed to delete document:", err);
-    showToast(`Delete failed: ${err.message}`, "error");
+  // 1. Instantly fade and slide out the document element (Optimistic Update)
+  const docItemEl = document.querySelector(`.doc-item[data-id="${docId}"]`);
+  if (docItemEl) {
+    docItemEl.style.opacity = "0";
+    docItemEl.style.transform = "translateX(-20px)";
+    docItemEl.style.transition = "all 0.3s ease";
+    setTimeout(() => {
+      docItemEl.remove();
+      if (docList.querySelectorAll(".doc-item").length === 0) {
+        docList.innerHTML = '<p class="doc-list-empty">No documents uploaded yet.</p>';
+      }
+    }, 300);
   }
+
+  // 2. Reset active chat session instantly if deleting the currently selected document
+  if (activeDocumentId === docId) {
+    resetSession();
+  }
+
+  // 3. Perform backend API delete and database delete asynchronously in the background
+  (async () => {
+    try {
+      // Delete index files from backend microservice
+      await deleteBackendDocument(docId);
+
+      // Delete document backup record from Supabase
+      const { error } = await supabaseClient
+        .from("documents")
+        .delete()
+        .eq("id", docId);
+
+      if (error) throw error;
+
+      showToast("Document deleted successfully.", "success");
+      
+      // Refresh documents list to ensure local state aligns with DB
+      fetchUserDocuments();
+    } catch (err) {
+      console.error("❌ Failed to delete document:", err);
+      showToast(`Delete failed: ${err.message}`, "error");
+      
+      // Re-fetch documents to restore list item if background delete failed
+      fetchUserDocuments();
+    }
+  })();
 }
 
 // Message submissions
