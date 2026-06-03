@@ -1,38 +1,68 @@
+import logging
 import os
+
 from supabase import create_client, Client
 
-# Initialize Supabase client
-supabase_url = os.getenv("SUPABASE_URL", "").strip()
-supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
+log = logging.getLogger(__name__)
 
-if supabase_url:
-    supabase_url = supabase_url.replace("/rest/v1", "").rstrip("/")
+url = os.getenv("SUPABASE_URL", "").strip().replace("/rest/v1", "").rstrip("/")
+anon_key = os.getenv("SUPABASE_ANON_KEY", "").strip()
+service_key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
 
-supabase_client: Client = None
-if supabase_url and supabase_anon_key:
+db: Client = None
+admin_client: Client = None
+
+if url and anon_key:
     try:
-        supabase_client = create_client(supabase_url, supabase_anon_key)
-        print("Backend Supabase client initialized successfully.")
-    except Exception as init_err:
-        print(f"Failed to initialize backend Supabase client: {init_err}")
-
-def fetch_document_backup(document_id: str, token: str) -> tuple[str | None, str | None]:
-    """
-    Fetches the filename and base64 encoded file data for a document from Supabase.
-    Authenticates the PostgREST client session using the user's active JWT session token.
-    """
-    if not supabase_client or not token:
-        return None, None
-
-    try:
-        # Set user session JWT context
-        supabase_client.postgrest.auth(token)
-        
-        res = supabase_client.table("documents").select("filename, file_data").eq("id", document_id).execute()
-        if res.data:
-            doc_record = res.data[0]
-            return doc_record.get("filename"), doc_record.get("file_data")
+        db = create_client(url, anon_key)
     except Exception as err:
-        print(f"Failed to fetch document backup for {document_id} from database: {err}")
-        
+        log.error("Supabase anon client failed: %s", err)
+
+if url and service_key:
+    try:
+        admin_client = create_client(url, service_key)
+    except Exception as err:
+        log.warning("Supabase service client failed: %s", err)
+
+
+def verify_token(token: str) -> str | None:
+    """Verify a Supabase JWT. Returns user_id on success, None on failure."""
+    client = admin_client or db
+    if not client:
+        return None
+    try:
+        resp = client.auth.get_user(token)
+        if resp and resp.user:
+            return resp.user.id
+    except Exception as err:
+        log.warning("Token verification failed: %s", err)
+    return None
+
+
+def fetch_document_backup(doc_id: str, token: str) -> tuple[str | None, str | None]:
+    """Fetch filename + base64 file_data from Supabase under the user's RLS context."""
+    if not db or not token:
+        return None, None
+    try:
+        db.postgrest.auth(token)
+        res = db.table("documents").select("filename, file_data").eq("id", doc_id).execute()
+        if res.data:
+            row = res.data[0]
+            return row.get("filename"), row.get("file_data")
+    except Exception as err:
+        log.error("Fetch backup failed for %s: %s", doc_id, err)
     return None, None
+
+
+def fetch_document_name(doc_id: str) -> str | None:
+    """Fetch filename by doc_id bypassing RLS using the admin client."""
+    client = admin_client or db
+    if not client:
+        return None
+    try:
+        res = client.table("documents").select("filename").eq("id", doc_id).execute()
+        if res.data:
+            return res.data[0].get("filename")
+    except Exception as err:
+        log.error("Fetch document name failed for %s: %s", doc_id, err)
+    return None

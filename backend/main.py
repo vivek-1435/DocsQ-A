@@ -1,97 +1,125 @@
-import os
 import base64
+import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
+from uuid import UUID
 
 from dotenv import load_dotenv
-
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from database import fetch_document_backup
-from file_utils import UPLOAD_DIR, VECTOR_STORE_DIR, delete_local_document, save_uploaded_file
+from database import fetch_document_backup, fetch_document_name, verify_token
+from file_utils import delete_index, load_index, save_index
 from rag_pipeline import RAGPipeline
 
-app = FastAPI(title="Stateless RAG Document Q&A API", version="2.5.0")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
 
+app = FastAPI(title="RAG Document Q&A", version="3.0.0")
+
+origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or [
+    "http://localhost", "http://localhost:5500", "http://127.0.0.1:5500", "null"
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".pptx"}
+MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-loaded_pipelines: dict[str, RAGPipeline] = {}
-
-
-class QuestionRequest(BaseModel):
-    document_id: str
-    question: str
-    token: str | None = None
+# In-memory cache: doc_id → loaded pipeline
+pipelines: dict[str, RAGPipeline] = {}
 
 
-def _build_index(document_id: str, saved_path: Path, filename: str) -> RAGPipeline:
-    vector_store_path = VECTOR_STORE_DIR / document_id
-    pipeline = RAGPipeline()
-    pipeline.process_document(str(saved_path), original_name=filename)
-    pipeline.save_index(str(vector_store_path))
-    loaded_pipelines[document_id] = pipeline
-    return pipeline
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def require_auth(request: Request) -> str:
+    """Extract and verify Bearer token. Returns the JWT string on success."""
+    header = request.headers.get("Authorization", "")
+    token = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+    if not token:
+        raise HTTPException(401, "Missing Authorization header.")
+    if not verify_token(token):
+        raise HTTPException(401, "Invalid or expired token.")
+    return token
 
 
-def _load_local_index(document_id: str) -> RAGPipeline | None:
-    vector_store_path = VECTOR_STORE_DIR / document_id
-    if not vector_store_path.exists():
-        return None
-
-    pipeline = RAGPipeline()
-    pipeline.load_index(str(vector_store_path))
-    loaded_pipelines[document_id] = pipeline
-    return pipeline
-
-
-def _rebuild_index_from_backup(document_id: str, token: str) -> RAGPipeline | None:
-    filename, file_data_b64 = fetch_document_backup(document_id, token)
-    if not filename or not file_data_b64:
-        return None
-
-    ext = Path(filename).suffix.lower()
-    saved_path = UPLOAD_DIR / f"{document_id}{ext}"
-    saved_path.write_bytes(base64.b64decode(file_data_b64))
-    return _build_index(document_id, saved_path, filename)
-
-
-def _get_pipeline(document_id: str, token: str | None = None) -> RAGPipeline:
-    if document_id in loaded_pipelines:
-        return loaded_pipelines[document_id]
-
-    vector_store_path = VECTOR_STORE_DIR / document_id
-
-    if not vector_store_path.exists() and token:
-        try:
-            pipeline = _rebuild_index_from_backup(document_id, token)
-            if pipeline:
-                return pipeline
-        except Exception as rebuild_err:
-            print(f"Failed to rebuild index for {document_id}: {rebuild_err}")
-
+def valid_doc_id(doc_id: str) -> None:
     try:
-        pipeline = _load_local_index(document_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load vector index: {exc}") from exc
+        UUID(doc_id)
+    except ValueError:
+        raise HTTPException(400, "document_id must be a valid UUID.")
+
+
+# ── Pipeline helpers ──────────────────────────────────────────────────────────
+
+def build_pipeline(doc_id: str, file_bytes: bytes, filename: str) -> RAGPipeline:
+    pipeline = RAGPipeline()
+    pipeline.index_document(file_bytes, filename)
+    with tempfile.TemporaryDirectory() as tmp:
+        pipeline.save_index(tmp)
+        if not save_index(tmp, doc_id):
+            log.warning("Could not persist index for %s to Supabase.", doc_id)
+    pipelines[doc_id] = pipeline
+    return pipeline
+
+
+def load_pipeline(doc_id: str) -> RAGPipeline | None:
+    index_path = load_index(doc_id)
+    if not index_path:
+        return None
+    try:
+        pipeline = RAGPipeline()
+        doc_name = fetch_document_name(doc_id) or ""
+        pipeline.load_index(index_path, doc_name)
+        pipelines[doc_id] = pipeline
+        return pipeline
+    except Exception as err:
+        log.error("Failed to load index for %s: %s", doc_id, err)
+        return None
+    finally:
+        if index_path and Path(index_path).exists():
+            shutil.rmtree(index_path, ignore_errors=True)
+
+
+def rebuild_pipeline(doc_id: str, token: str) -> RAGPipeline | None:
+    filename, b64_data = fetch_document_backup(doc_id, token)
+    if not filename or not b64_data:
+        return None
+    return build_pipeline(doc_id, base64.b64decode(b64_data), filename)
+
+
+def get_pipeline(doc_id: str, token: str | None = None) -> RAGPipeline:
+    if doc_id in pipelines:
+        return pipelines[doc_id]
+
+    pipeline = load_pipeline(doc_id)
+
+    if not pipeline and token:
+        try:
+            pipeline = rebuild_pipeline(doc_id, token)
+        except Exception as err:
+            log.error("Rebuild failed for %s: %s", doc_id, err)
 
     if not pipeline:
-        raise HTTPException(
-            status_code=404,
-            detail="Document index not found on backend. Please re-upload the document.",
-        )
-
+        raise HTTPException(404, "Document index not found. Please re-upload.")
     return pipeline
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+class AskRequest(BaseModel):
+    document_id: str
+    question: str
 
 
 @app.get("/health")
@@ -100,7 +128,7 @@ async def health():
 
 
 @app.get("/config")
-async def get_config():
+async def config():
     return {
         "supabase_url": os.getenv("SUPABASE_URL", ""),
         "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", ""),
@@ -108,53 +136,56 @@ async def get_config():
 
 
 @app.post("/upload")
-async def upload_file(
-    document_id: str,
-    file: UploadFile = File(...)
-):
+async def upload(request: Request, document_id: str, file: UploadFile = File(...)):
+    require_auth(request)
+    valid_doc_id(document_id)
+
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Supported formats: PDF, Word, Text, CSV, Excel, PowerPoint",
-        )
+        raise HTTPException(400, f"Unsupported file type '{ext}'.")
 
-    saved_path = UPLOAD_DIR / f"{document_id}{ext}"
-    vector_store_path = VECTOR_STORE_DIR / document_id
-
-    try:
-        save_uploaded_file(file.file, saved_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File is empty.")
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(413, "File exceeds the 50 MB limit.")
 
     try:
-        _build_index(document_id, saved_path, file.filename)
-    except Exception as e:
-        saved_path.unlink(missing_ok=True)
-        delete_local_document(document_id)
-        raise HTTPException(status_code=500, detail=f"Failed to index document: {e}")
+        build_pipeline(document_id, data, file.filename)
+    except HTTPException:
+        raise
+    except Exception as err:
+        delete_index(document_id)
+        raise HTTPException(500, f"Indexing failed: {err}")
 
     return {
         "document_id": document_id,
         "filename": file.filename,
-        "file_path": f"uploads/{document_id}{ext}",
-        "vector_store_path": f"uploads/vector_stores/{document_id}",
-        "message": "Document indexed successfully on backend!",
+        "vector_store_path": f"supabase://vector-stores/{document_id}/index.zip",
     }
 
 
 @app.post("/ask")
-async def ask_question(req: QuestionRequest):
-    pipeline = _get_pipeline(req.document_id, req.token)
+async def ask(request: Request, body: AskRequest):
+    token = require_auth(request)
+    valid_doc_id(body.document_id)
+
+    question = body.question.strip()[:2000]
+    if not question:
+        raise HTTPException(400, "Question cannot be empty.")
 
     try:
-        return pipeline.ask(req.question)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate answer: {e}")
+        return get_pipeline(body.document_id, token).ask(question)
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(500, f"Failed to answer: {err}")
 
 
 @app.delete("/document/{document_id}")
-async def delete_document(document_id: str):
-    loaded_pipelines.pop(document_id, None)
-    delete_local_document(document_id)
-    return {"message": "Document files deleted from backend."}
+async def delete_document(document_id: str, request: Request):
+    require_auth(request)
+    valid_doc_id(document_id)
+    pipelines.pop(document_id, None)
+    delete_index(document_id)
+    return {"message": "Document deleted."}

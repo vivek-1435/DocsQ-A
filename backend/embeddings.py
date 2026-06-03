@@ -1,72 +1,53 @@
+import logging
+import random
 import re
 import time
-import random
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
+log = logging.getLogger(__name__)
+
 MAX_BATCH_CHARS = 150_000
-MAX_BATCH_SIZE = 100
-MAX_WORKERS = 5
-RETRY_COUNT = 6
-REQUEST_PACING_SECONDS = 0.5
+MAX_BATCH_SIZE  = 100
+WORKERS         = 5
+MAX_RETRIES     = 6
+PACING_SECONDS  = 0.5
 
 
-class ParallelGoogleGenerativeAIEmbeddings(GoogleGenerativeAIEmbeddings):
-    def embed_documents(
-        self,
-        texts: list[str],
-        *,
-        batch_size: int = 100,
-        task_type: str | None = None,
-        titles: list[str] | None = None,
-        output_dimensionality: int | None = None,
-    ) -> list[list[float]]:
-        if texts:
-            chunk_len = len(texts[0])
-            dynamic_batch_size = max(1, min(MAX_BATCH_SIZE, int(MAX_BATCH_CHARS / chunk_len)))
-        else:
-            dynamic_batch_size = MAX_BATCH_SIZE
+class ParallelEmbeddings(GoogleGenerativeAIEmbeddings):
+    def embed_documents(self, texts: list[str], *, batch_size=100,
+                        task_type=None, titles=None, output_dimensionality=None) -> list[list[float]]:
+        chunk_size = max(1, min(MAX_BATCH_SIZE, int(MAX_BATCH_CHARS / len(texts[0])))) if texts else MAX_BATCH_SIZE
+        batches = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        log.info("Embedding %d texts across %d batches (%d workers).", len(texts), len(batches), WORKERS)
 
-        print(f"Dynamic batch size: first chunk length is {chunk_len if texts else 0} chars. Using batch_size={dynamic_batch_size}")
-        batches = [texts[i:i + dynamic_batch_size] for i in range(0, len(texts), dynamic_batch_size)]
-        
-        def _embed_batch(batch_texts):
-            for attempt in range(RETRY_COUNT):
+        def embed_batch(batch):
+            for attempt in range(MAX_RETRIES):
                 try:
-                    return super(ParallelGoogleGenerativeAIEmbeddings, self).embed_documents(
-                        batch_texts,
-                        batch_size=len(batch_texts),
-                        task_type=task_type,
-                        output_dimensionality=output_dimensionality
+                    return super(ParallelEmbeddings, self).embed_documents(
+                        batch, batch_size=len(batch),
+                        task_type=task_type, output_dimensionality=output_dimensionality,
                     )
-                except Exception as e:
-                    err_str = str(e)
-                    is_rate_limit = (
-                        getattr(e, "status_code", None) == 429
-                        or "429" in err_str
-                        or "RESOURCE_EXHAUSTED" in err_str
-                    )
-                    
-                    if is_rate_limit and attempt < RETRY_COUNT - 1:
-                        sleep_time = (2.5 ** attempt) + 1.0 + random.uniform(0.5, 3.5)
-                        match = re.search(r"retry in ([\d\.]+)s", err_str)
-                        if match:
-                            sleep_time = float(match.group(1)) + 1.0 + random.uniform(0.5, 2.5)
-                        print(f"\nRate limit (429) hit. Attempt {attempt + 1}/{RETRY_COUNT}. Sleeping {sleep_time:.2f}s.")
-                        time.sleep(sleep_time)
+                except Exception as err:
+                    msg = str(err)
+                    rate_limited = getattr(err, "status_code", None) == 429 or "429" in msg or "RESOURCE_EXHAUSTED" in msg
+                    if rate_limited and attempt < MAX_RETRIES - 1:
+                        wait = (2.5 ** attempt) + 1.0 + random.uniform(0.5, 3.5)
+                        found = re.search(r"retry in ([\d\.]+)s", msg)
+                        if found:
+                            wait = float(found.group(1)) + 1.0 + random.uniform(0.5, 2.5)
+                        log.warning("Rate limited — attempt %d/%d, sleeping %.1fs.", attempt + 1, MAX_RETRIES, wait)
+                        time.sleep(wait)
                     else:
-                        raise e
-            
+                        raise
+
         results = []
-        print(f"Embedding {len(texts)} chunks in parallel with {MAX_WORKERS} threads...")
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = []
             for batch in batches:
-                futures.append(executor.submit(_embed_batch, batch))
-                time.sleep(REQUEST_PACING_SECONDS)
-                
+                futures.append(pool.submit(embed_batch, batch))
+                time.sleep(PACING_SECONDS)
             for future in futures:
                 results.extend(future.result())
-                
         return results

@@ -1,68 +1,54 @@
-// DOM Element References
-export const uploadZone = document.getElementById("uploadZone");
-export const fileInput = document.getElementById("fileInput");
-export const docList = document.getElementById("docList");
-export const chatSubtitle = document.getElementById("chatSubtitle");
-export const welcomeScreen = document.getElementById("welcomeScreen");
-export const messagesList = document.getElementById("messagesList");
-export const questionInput = document.getElementById("questionInput");
-export const sendBtn = document.getElementById("sendBtn");
-export const toast = document.getElementById("toast");
+// DOM refs
+export const $ = (id) => document.getElementById(id);
 
-export const authScreen = document.getElementById("authScreen");
-export const authTitle = document.getElementById("authTitle");
-export const authSubtitle = document.getElementById("authSubtitle");
-export const authSubmitBtn = document.getElementById("authSubmitBtn");
-export const authToggleBtn = document.getElementById("authToggleBtn");
-export const authToggleText = document.getElementById("authToggleText");
-export const authForm = document.getElementById("authForm");
-export const authErrorMsg = document.getElementById("authErrorMsg");
+export const uploadZone    = $("uploadZone");
+export const fileInput     = $("fileInput");
+export const docList       = $("docList");
+export const chatSubtitle  = $("chatSubtitle");
+export const welcomeScreen = $("welcomeScreen");
+export const messagesList  = $("messagesList");
+export const messagesWrap  = $("messagesWrap");
+export const questionInput = $("questionInput");
+export const sendBtn       = $("sendBtn");
+export const toast         = $("toast");
+export const authScreen    = $("authScreen");
+export const authTitle     = $("authTitle");
+export const authSubtitle  = $("authSubtitle");
+export const authSubmitBtn = $("authSubmitBtn");
+export const authToggleBtn = $("authToggleBtn");
+export const authToggleText = $("authToggleText");
+export const authForm      = $("authForm");
+export const authErrorMsg  = $("authErrorMsg");
+export const userProfile   = $("userProfile");
+export const userEmail     = $("userEmail");
+export const userAvatar    = $("userAvatar");
+export const signOutBtn    = $("signOutBtn");
+export const menuToggleBtn = $("menuToggleBtn");
+export const sidebar       = $("sidebar");
+export const sidebarOverlay = $("sidebarOverlay");
 
-export const userProfile = document.getElementById("userProfile");
-export const userEmail = document.getElementById("userEmail");
-export const userAvatar = document.getElementById("userAvatar");
-export const signOutBtn = document.getElementById("signOutBtn");
-
-export const menuToggleBtn = document.getElementById("menuToggleBtn");
-export const sidebar = document.getElementById("sidebar");
-export const sidebarOverlay = document.getElementById("sidebarOverlay");
-
-// Toast Notification helper
+// Toast
 let toastTimer = null;
-export function showToast(message, type = "") {
-  toast.textContent = message;
+export function showToast(msg, type = "") {
+  toast.textContent = msg;
   toast.className = `toast ${type} show`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toast.classList.remove("show");
-  }, 4000);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 4000);
 }
 
-// Toggle input states
-export function setInputEnabled(enabled, activeDocumentId) {
-  questionInput.disabled = !enabled || !activeDocumentId;
-  sendBtn.disabled = !enabled || !activeDocumentId;
-}
+// Input state
+export const setInputEnabled = (on, docId) => {
+  questionInput.disabled = !on || !docId;
+  sendBtn.disabled       = !on || !docId;
+};
 
-// Auth modal actions
-export function showAuthModal() {
-  authErrorMsg.style.display = "none";
-  authForm.reset();
-  if (authScreen) {
-    authScreen.classList.remove("hidden");
-  }
-}
+// Auth modal
+export const showAuthModal  = () => { authErrorMsg.style.display = "none"; authForm.reset(); authScreen?.classList.remove("hidden"); };
+export const closeAuthModal = () => authScreen?.classList.add("hidden");
 
-export function closeAuthModal() {
-  if (authScreen) {
-    authScreen.classList.add("hidden");
-  }
-}
+// Scroll chat to bottom
+export const scrollToBottom = () => messagesWrap?.scrollTo({ top: messagesWrap.scrollHeight, behavior: "smooth" });
 
-// Scroll chat feed
-export function scrollToBottom() {
-  messagesList.scrollTo({
-    top: messagesList.scrollHeight,
-    behavior: "smooth",
-  });
-}
+// Textarea height management
+export const resetInputHeight = () => { questionInput.style.height = "24px"; };
+export const growInput = () => { questionInput.style.height = "24px"; questionInput.style.height = questionInput.scrollHeight + "px"; };

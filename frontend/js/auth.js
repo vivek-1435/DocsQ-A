@@ -1,49 +1,54 @@
 import { showToast } from "./ui.js";
 
-export let supabaseClient = null;
-export let currentUser = null;
+let client = null;
+let currentUser = null;
 
-// Initialize Supabase Client dynamically
+export const getClient = () => client;
+export const getUser   = () => currentUser;
+
 export function initSupabase(url, anonKey) {
-  let supabaseUrl = url.trim().replace(/\/rest\/v1\/?$/, "");
-  if (supabaseUrl.endsWith("/")) {
-    supabaseUrl = supabaseUrl.slice(0, -1);
-  }
-  
-  supabaseClient = window.supabase.createClient(supabaseUrl, anonKey.trim());
-  return supabaseClient;
+  const cleanUrl = url.trim().replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
+  client = window.supabase.createClient(cleanUrl, anonKey.trim());
+  return client;
 }
 
-// Supabase Authentication Operations
 export async function signIn(email, password) {
-  if (!supabaseClient) throw new Error("Supabase is not initialized.");
-  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (!client) throw new Error("Supabase not initialized.");
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
   currentUser = data.user;
   return data;
 }
 
 export async function signUp(email, password) {
-  if (!supabaseClient) throw new Error("Supabase is not initialized.");
-  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  if (!client) throw new Error("Supabase not initialized.");
+  const { data, error } = await client.auth.signUp({ email, password });
   if (error) throw error;
   return data;
 }
 
 export async function signOut() {
-  if (supabaseClient) {
-    const { error } = await supabaseClient.auth.signOut();
-    if (error) throw error;
-    currentUser = null;
-    showToast("Signed out successfully.", "");
+  if (!client) return;
+  const { error } = await client.auth.signOut();
+  if (error) throw error;
+  currentUser = null;
+  showToast("Signed out.", "");
+}
+
+export async function getToken() {
+  if (!client) return null;
+  try {
+    const { data: { session } } = await client.auth.getSession();
+    return session?.access_token ?? null;
+  } catch {
+    return null;
   }
 }
 
-// Bind observer callbacks on Auth State shifts
 export function onAuthChange(callback) {
-  if (!supabaseClient) return;
-  supabaseClient.auth.onAuthStateChange((event, session) => {
-    currentUser = session ? session.user : null;
+  if (!client) return;
+  client.auth.onAuthStateChange((event, session) => {
+    currentUser = session?.user ?? null;
     callback(event, session);
   });
 }

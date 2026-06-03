@@ -1,92 +1,94 @@
+import csv
+import io
+import logging
+from io import BytesIO
 from pathlib import Path
 
 from langchain_core.documents import Document
 
+log = logging.getLogger(__name__)
 
-def _source_document(file_path: str, content: str) -> Document:
-    return Document(page_content=content, metadata={"source": Path(file_path).name})
+ZIP_EXTENSIONS = {".docx", ".xlsx", ".pptx"}
 
 
-def _read_text_file(file_path: str) -> str:
+def _check_magic_bytes(data: bytes, ext: str) -> None:
+    if not data:
+        raise ValueError("File is empty.")
+    if ext == ".pdf" and not data[:4].startswith(b"%PDF"):
+        raise ValueError("Not a valid PDF.")
+    if ext in ZIP_EXTENSIONS and not data[:4].startswith(b"PK\x03\x04"):
+        raise ValueError(f"Not a valid {ext.upper()} file.")
+
+
+def _doc(filename: str, text: str) -> Document:
+    return Document(page_content=text, metadata={"source": filename})
+
+
+def _decode(raw: bytes) -> str:
     try:
-        return Path(file_path).read_text(encoding="utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        return Path(file_path).read_text(encoding="latin-1")
+        return raw.decode("latin-1")
 
 
-def _row_to_text(row) -> str:
-    values = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
-    return " | ".join(values)
+def _row_text(row) -> str:
+    return " | ".join(str(c).strip() for c in row if c is not None and str(c).strip())
 
 
-def load_document(file_path: str) -> list:
-    ext = Path(file_path).suffix.lower()
+def load_document(file_bytes: bytes, filename: str) -> list[Document]:
+    ext = Path(filename).suffix.lower()
+    _check_magic_bytes(file_bytes, ext)
 
     if ext == ".pdf":
-        from langchain_community.document_loaders import PyPDFLoader
-        return PyPDFLoader(file_path).load()
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(file_bytes))
+        return [
+            Document(page_content=page.extract_text() or "", metadata={"source": filename, "page": i})
+            for i, page in enumerate(reader.pages)
+        ]
 
-    elif ext == ".docx":
-        from langchain_community.document_loaders import Docx2txtLoader
-        return Docx2txtLoader(file_path).load()
+    if ext == ".docx":
+        from docx import Document as Docx
+        doc = Docx(BytesIO(file_bytes))
+        return [_doc(filename, "\n".join(p.text for p in doc.paragraphs))]
 
-    elif ext == ".txt":
-        return [_source_document(file_path, _read_text_file(file_path))]
+    if ext == ".txt":
+        return [_doc(filename, _decode(file_bytes))]
 
-    elif ext == ".csv":
-        import csv
+    if ext == ".csv":
+        lines = []
+        for enc in ("utf-8", "latin-1"):
+            try:
+                reader = csv.reader(io.TextIOWrapper(BytesIO(file_bytes), encoding=enc))
+                lines = [_row_text(row) for row in reader if _row_text(row)]
+                break
+            except UnicodeDecodeError:
+                continue
+        return [_doc(filename, "\n".join(lines))]
 
-        text_lines = []
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    row_text = _row_to_text(row)
-                    if row_text:
-                        text_lines.append(row_text)
-        except UnicodeDecodeError:
-            with open(file_path, "r", encoding="latin-1") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    row_text = _row_to_text(row)
-                    if row_text:
-                        text_lines.append(row_text)
-        return [_source_document(file_path, "\n".join(text_lines))]
-
-    elif ext == ".xlsx":
+    if ext == ".xlsx":
         import openpyxl
+        wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+        lines = []
+        for name in wb.sheetnames:
+            lines.append(f"--- Sheet: {name} ---")
+            lines += [_row_text(r) for r in wb[name].iter_rows(values_only=True) if _row_text(r)]
+        return [_doc(filename, "\n".join(lines))]
 
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        text_lines = []
-        for sheet_name in wb.sheetnames:
-            sheet = wb[sheet_name]
-            text_lines.append(f"--- Sheet: {sheet_name} ---")
-            for row in sheet.iter_rows(values_only=True):
-                row_text = _row_to_text(row)
-                if row_text:
-                    text_lines.append(row_text)
-        return [_source_document(file_path, "\n".join(text_lines))]
-
-    elif ext == ".pptx":
+    if ext == ".pptx":
         from pptx import Presentation
-
-        prs = Presentation(file_path)
-        text_lines = []
+        prs = Presentation(BytesIO(file_bytes))
+        lines = []
         for i, slide in enumerate(prs.slides):
-            text_lines.append(f"--- Slide {i+1} ---")
+            lines.append(f"--- Slide {i + 1} ---")
             for shape in slide.shapes:
                 try:
                     if hasattr(shape, "text") and shape.text.strip():
-                        text_lines.append(shape.text.strip())
-                    if hasattr(shape, "has_table") and shape.has_table:
-                        table = shape.table
-                        for row in table.rows:
-                            row_text = _row_to_text(cell.text for cell in row.cells)
-                            if row_text:
-                                text_lines.append(row_text)
-                except Exception as shape_err:
-                    print(f"Skipping shape in PPTX slide due to error: {shape_err}")
-                    continue
-        return [_source_document(file_path, "\n".join(text_lines))]
+                        lines.append(shape.text.strip())
+                    if getattr(shape, "has_table", False):
+                        lines += [_row_text(c.text for c in row.cells) for row in shape.table.rows]
+                except Exception as err:
+                    log.warning("Skipped PPTX shape: %s", err)
+        return [_doc(filename, "\n".join(lines))]
 
     raise ValueError(f"Unsupported file type: {ext}")
