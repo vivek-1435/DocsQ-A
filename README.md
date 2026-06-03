@@ -70,18 +70,27 @@ RagPdfView/
 
 ---
 
-## Setting Up Your Local Workspace (3-Step Guide)
+## Setting Up Your Local Workspace (5-Step Guide)
 
-Getting Ειδήμονας running locally takes less than 2 minutes. Let's get started!
+Getting Ειδήμονας running locally takes less than 3 minutes. Let's get started!
 
-### Step 1: Add Your Gemini API Key
-Create a .env file inside the backend/ directory:
+### Step 1: Configure Environment Variables
+Copy `backend/.env.example` to `backend/.env` and fill in the required keys:
 ```env
-GEMINI_API_KEY=your_actual_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_anon_key_here
+SUPABASE_SERVICE_KEY=your_service_role_key_here
 ```
-> Need a key? Grab a free one instantly from aistudio.google.com/apikey.
+* **Gemini API Key**: Grab a free one instantly from [Google AI Studio](https://aistudio.google.com/apikey).
+* **Supabase Keys**: Find them in your Supabase Dashboard under **Project Settings → API**.
 
-### Step 2: Install the Backend Dependencies
+### Step 2: Initialize Supabase Schema & Grants
+1. Copy the contents of the [schema.sql](schema.sql) file at the root of the project.
+2. Go to your **Supabase Dashboard → SQL Editor → New Query**.
+3. Paste the contents and click **Run**. This sets up the tables (`documents`, `chat_messages`), optimal indexes, RLS policies, and explicitly grants privileges to prevent table permission errors.
+
+### Step 3: Install Backend Dependencies
 Set up your Python virtual environment and install the required libraries:
 ```bash
 cd backend
@@ -90,20 +99,24 @@ source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Step 3: Start the Backend Server
+### Step 4: Start the Backend Server
 Fire up the FastAPI development server:
 ```bash
 uvicorn main:app --reload --port 8000
 ```
-* Backend Live at: http://localhost:8000
-* Interactive API docs: http://localhost:8000/docs
+* **Backend Status URL**: [http://localhost:8000/health](http://localhost:8000/health)
+* **Interactive API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-### Step 4: Open the Web UI
-Since the frontend has no Node.js dependencies or build steps, you can open it directly in your browser:
+### Step 5: Start the Frontend Web Server
+Since the frontend uses ES6 module imports (`import`/`export`), modern browsers restrict loading them directly from a local file (`file:///`) due to CORS security policies. 
+
+Run a simple local HTTP server from the project root:
 ```bash
-open frontend/index.html        # macOS
-# or simply double-click index.html in Finder/File Explorer
+# Start python HTTP server
+cd ../frontend
+python3 -m http.server 5500
 ```
+Then open your browser and navigate to **[http://localhost:5500](http://localhost:5500)**.
 
 ---
 
