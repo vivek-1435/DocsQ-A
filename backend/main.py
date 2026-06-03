@@ -1,18 +1,17 @@
 import os
+import base64
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-# Load environment variables at the very first step
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-import base64
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Import custom modular components
-from file_utils import UPLOAD_DIR, VECTOR_STORE_DIR, save_uploaded_file, delete_local_document
 from database import fetch_document_backup
+from file_utils import UPLOAD_DIR, VECTOR_STORE_DIR, delete_local_document, save_uploaded_file
 from rag_pipeline import RAGPipeline
 
 app = FastAPI(title="Stateless RAG Document Q&A API", version="2.5.0")
@@ -27,14 +26,72 @@ app.add_middleware(
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".pptx"}
 
-# In-memory pipeline cache for fast sub-second queries
 loaded_pipelines: dict[str, RAGPipeline] = {}
 
 
 class QuestionRequest(BaseModel):
     document_id: str
     question: str
-    token: str = None
+    token: str | None = None
+
+
+def _build_index(document_id: str, saved_path: Path, filename: str) -> RAGPipeline:
+    vector_store_path = VECTOR_STORE_DIR / document_id
+    pipeline = RAGPipeline()
+    pipeline.process_document(str(saved_path), original_name=filename)
+    pipeline.save_index(str(vector_store_path))
+    loaded_pipelines[document_id] = pipeline
+    return pipeline
+
+
+def _load_local_index(document_id: str) -> RAGPipeline | None:
+    vector_store_path = VECTOR_STORE_DIR / document_id
+    if not vector_store_path.exists():
+        return None
+
+    pipeline = RAGPipeline()
+    pipeline.load_index(str(vector_store_path))
+    loaded_pipelines[document_id] = pipeline
+    return pipeline
+
+
+def _rebuild_index_from_backup(document_id: str, token: str) -> RAGPipeline | None:
+    filename, file_data_b64 = fetch_document_backup(document_id, token)
+    if not filename or not file_data_b64:
+        return None
+
+    ext = Path(filename).suffix.lower()
+    saved_path = UPLOAD_DIR / f"{document_id}{ext}"
+    saved_path.write_bytes(base64.b64decode(file_data_b64))
+    return _build_index(document_id, saved_path, filename)
+
+
+def _get_pipeline(document_id: str, token: str | None = None) -> RAGPipeline:
+    if document_id in loaded_pipelines:
+        return loaded_pipelines[document_id]
+
+    vector_store_path = VECTOR_STORE_DIR / document_id
+
+    if not vector_store_path.exists() and token:
+        try:
+            pipeline = _rebuild_index_from_backup(document_id, token)
+            if pipeline:
+                return pipeline
+        except Exception as rebuild_err:
+            print(f"Failed to rebuild index for {document_id}: {rebuild_err}")
+
+    try:
+        pipeline = _load_local_index(document_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load vector index: {exc}") from exc
+
+    if not pipeline:
+        raise HTTPException(
+            status_code=404,
+            detail="Document index not found on backend. Please re-upload the document.",
+        )
+
+    return pipeline
 
 
 @app.get("/health")
@@ -44,13 +101,9 @@ async def health():
 
 @app.get("/config")
 async def get_config():
-    """
-    Exposes Supabase credentials from the backend's .env file dynamically
-    to the frontend to avoid duplicating credentials or hardcoding them.
-    """
     return {
         "supabase_url": os.getenv("SUPABASE_URL", ""),
-        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", "")
+        "supabase_anon_key": os.getenv("SUPABASE_ANON_KEY", ""),
     }
 
 
@@ -69,18 +122,13 @@ async def upload_file(
     saved_path = UPLOAD_DIR / f"{document_id}{ext}"
     vector_store_path = VECTOR_STORE_DIR / document_id
 
-    # save raw file bytes using file utility helper
     try:
         save_uploaded_file(file.file, saved_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    # initialize, process and save vector index
     try:
-        pipeline = RAGPipeline()
-        pipeline.process_document(str(saved_path), original_name=file.filename)
-        pipeline.save_index(str(vector_store_path))
-        loaded_pipelines[document_id] = pipeline
+        _build_index(document_id, saved_path, file.filename)
     except Exception as e:
         saved_path.unlink(missing_ok=True)
         delete_local_document(document_id)
@@ -97,70 +145,16 @@ async def upload_file(
 
 @app.post("/ask")
 async def ask_question(req: QuestionRequest):
-    document_id = req.document_id
-    pipeline = None
-
-    if document_id in loaded_pipelines:
-        pipeline = loaded_pipelines[document_id]
-    else:
-        # Load index on-demand from disk
-        vector_store_path = VECTOR_STORE_DIR / document_id
-        
-        # If the local index is missing, attempt to reconstruct it from the Supabase backup
-        if not vector_store_path.exists() and req.token:
-            print(f"🔄 Vector store for {document_id} is missing from backend disk. Attempting auto-rebuild from database...")
-            try:
-                # Fetch filename and raw file data (base64 string) from Supabase via database module
-                filename, file_data_b64 = fetch_document_backup(document_id, req.token)
-                
-                if file_data_b64:
-                    file_bytes = base64.b64decode(file_data_b64)
-                    ext = Path(filename).suffix.lower()
-                    saved_path = UPLOAD_DIR / f"{document_id}{ext}"
-                    
-                    # Write raw file back to disk
-                    with open(saved_path, "wb") as f:
-                        f.write(file_bytes)
-                        
-                    # Process and reconstruct vector store
-                    pipeline = RAGPipeline()
-                    pipeline.process_document(str(saved_path), original_name=filename)
-                    pipeline.save_index(str(vector_store_path))
-                    loaded_pipelines[document_id] = pipeline
-                    print(f"✅ Successfully reconstructed vector index for {filename}!")
-            except Exception as rebuild_err:
-                print(f"⚠️ Failed to auto-reconstruct index for {document_id} from database: {rebuild_err}")
-
-        # Try standard local load
-        if not pipeline and vector_store_path.exists():
-            try:
-                pipeline = RAGPipeline()
-                pipeline.load_index(str(vector_store_path))
-                loaded_pipelines[document_id] = pipeline
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to load vector index: {e}")
-
-        # If still missing, inform the user
-        if not pipeline:
-            raise HTTPException(
-                status_code=404, 
-                detail="Document index not found on backend. Please re-upload the document."
-            )
+    pipeline = _get_pipeline(req.document_id, req.token)
 
     try:
-        result = pipeline.ask(req.question)
-        return result
+        return pipeline.ask(req.question)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate answer: {e}")
 
 
 @app.delete("/document/{document_id}")
 async def delete_document(document_id: str):
-    # clear cache
-    if document_id in loaded_pipelines:
-        del loaded_pipelines[document_id]
-
-    # delete local files and vector stores from disk via file utility helper
+    loaded_pipelines.pop(document_id, None)
     delete_local_document(document_id)
-
     return {"message": "Document files deleted from backend."}

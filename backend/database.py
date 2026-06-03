@@ -12,9 +12,9 @@ supabase_client: Client = None
 if supabase_url and supabase_anon_key:
     try:
         supabase_client = create_client(supabase_url, supabase_anon_key)
-        print("✅ Backend Supabase client initialized successfully!")
+        print("Backend Supabase client initialized successfully.")
     except Exception as init_err:
-        print(f"⚠️ Failed to initialize backend Supabase client: {init_err}")
+        print(f"Failed to initialize backend Supabase client: {init_err}")
 
 def fetch_document_backup(document_id: str, token: str) -> tuple[str | None, str | None]:
     """
@@ -33,6 +33,6 @@ def fetch_document_backup(document_id: str, token: str) -> tuple[str | None, str
             doc_record = res.data[0]
             return doc_record.get("filename"), doc_record.get("file_data")
     except Exception as err:
-        print(f"⚠️ Failed to fetch document backup for {document_id} from database: {err}")
+        print(f"Failed to fetch document backup for {document_id} from database: {err}")
         
     return None, None

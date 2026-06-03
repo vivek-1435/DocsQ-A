@@ -1,18 +1,12 @@
-import { API_BASE } from "./config.js";
 import {
   uploadZone,
   fileInput,
-  progressWrap,
-  progressBar,
-  progressLabel,
-  progressPct,
   docList,
   chatSubtitle,
   welcomeScreen,
   messagesList,
   questionInput,
   sendBtn,
-  authScreen,
   authTitle,
   authSubtitle,
   authSubmitBtn,
@@ -52,20 +46,60 @@ import {
 import {
   appendMessage,
   appendTyping,
+  escapeHTML,
   removeTyping,
   resetMessageCount,
 } from "./chat.js";
 
-// Main App States
+const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt", ".csv", ".xlsx", ".pptx"];
+const MAX_FILE_SIZE_MB = 50;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+const AUTH_COPY = {
+  signin: {
+    title: "Welcome Back",
+    subtitle: "Sign in to your workspace to resume document Q&A",
+    submit: "Sign In",
+    toggleText: "Don't have an account?",
+    toggleAction: "Create Account",
+  },
+  signup: {
+    title: "Create Account",
+    subtitle: "Sign up for a free document intelligence workspace",
+    submit: "Sign Up",
+    toggleText: "Already have an account?",
+    toggleAction: "Sign In",
+  },
+};
+
 let activeDocumentId = null;
 let activeDocumentName = "";
 let isLoading = false;
 const pendingUploads = new Map();
-
-// Authentication UI Flow Mode state
 let authMode = "signin";
 
-// Drag and drop event handlers
+function generateDocumentId() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, (c) =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const copy = AUTH_COPY[authMode];
+
+  authErrorMsg.style.display = "none";
+  authTitle.textContent = copy.title;
+  authSubtitle.textContent = copy.subtitle;
+  authSubmitBtn.textContent = supabaseClient ? copy.submit : "Connecting to backend...";
+  authToggleText.textContent = copy.toggleText;
+  authToggleBtn.textContent = copy.toggleAction;
+}
+
 uploadZone.addEventListener("dragenter", (e) => {
   e.preventDefault();
   uploadZone.classList.add("dragover");
@@ -97,32 +131,13 @@ fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) handleFile(fileInput.files[0]);
 });
 
-// Toggle Auth screen mode
 authToggleBtn.addEventListener("click", (e) => {
   e.preventDefault();
-  console.log("🔄 Toggle Auth button clicked! Current mode was:", authMode);
-  authErrorMsg.style.display = "none";
-  if (authMode === "signin") {
-    authMode = "signup";
-    authTitle.textContent = "Create Account";
-    authSubtitle.textContent = "Sign up for a free document intelligence workspace";
-    authSubmitBtn.textContent = supabaseClient ? "Sign Up" : "Connecting to backend...";
-    authToggleText.textContent = "Already have an account?";
-    authToggleBtn.textContent = "Sign In";
-  } else {
-    authMode = "signin";
-    authTitle.textContent = "Welcome Back";
-    authSubtitle.textContent = "Sign in to your workspace to resume document Q&A";
-    authSubmitBtn.textContent = supabaseClient ? "Sign In" : "Connecting to backend...";
-    authToggleText.textContent = "Don't have an account?";
-    authToggleBtn.textContent = "Create Account";
-  }
+  setAuthMode(authMode === "signin" ? "signup" : "signin");
 });
 
-// Auth form submissions
 authForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  console.log("📤 Form submitted! Auth mode:", authMode);
   authErrorMsg.style.display = "none";
   
   if (!supabaseClient) {
@@ -144,18 +159,14 @@ authForm.addEventListener("submit", async (e) => {
     } else {
       await signUp(email, password);
       showToast("Account created successfully! Check your email to verify.", "success");
-      authMode = "signin";
-      authTitle.textContent = "Welcome Back";
-      authSubmitBtn.textContent = "Sign In";
-      authToggleText.textContent = "Don't have an account?";
-      authToggleBtn.textContent = "Create Account";
+      setAuthMode("signin");
     }
   } catch (err) {
     authErrorMsg.textContent = err.message;
     authErrorMsg.style.display = "block";
   } finally {
     authSubmitBtn.disabled = false;
-    authSubmitBtn.textContent = authMode === "signin" ? "Sign In" : "Sign Up";
+    authSubmitBtn.textContent = AUTH_COPY[authMode].submit;
   }
 });
 
@@ -167,32 +178,22 @@ signOutBtn.addEventListener("click", async () => {
   }
 });
 
-// App Inits
 async function initApp() {
-  console.log("⚙️ Starting Ειδήμονας initialization...");
   try {
-    // 1. Verify health
     await checkHealth();
 
-    // 2. Load configurations
     const config = await fetchBackendConfig();
     if (!config.supabase_url || !config.supabase_anon_key) {
       throw new Error("Supabase credentials missing in backend .env file!");
     }
 
-    // 3. Init Supabase auth client
     initSupabase(config.supabase_url, config.supabase_anon_key);
-    console.log("✅ Supabase client created successfully!");
-    
-    // Enable the submit button and restore the text
+
     authSubmitBtn.disabled = false;
-    authSubmitBtn.textContent = authMode === "signin" ? "Sign In" : "Sign Up";
+    setAuthMode(authMode);
     
-    // 4. Register Session Observer
-    onAuthChange((event, session) => {
-      console.log("🔑 Supabase Auth State Change event:", event, session ? "Session active" : "No session");
+    onAuthChange((_event, session) => {
       if (session) {
-        // Update User Profile Widget
         userEmail.textContent = session.user.email;
         userAvatar.textContent = session.user.email.charAt(0).toUpperCase();
         userProfile.style.display = "flex";
@@ -207,39 +208,35 @@ async function initApp() {
     });
 
   } catch (err) {
-    console.error("❌ Initialization Error caught:", err);
-    showToast(`⚠️ Initialization failed: ${err.message}`, "error");
+    console.error(err);
+    showToast(`Initialization failed: ${err.message}`, "error");
     chatSubtitle.textContent = "Configuration Required (.env)";
     
-    authErrorMsg.textContent = `⚠️ System Configuration Error: ${err.message}. Please check your backend .env file, verify that port 8000 is running, and refresh the page.`;
+    authErrorMsg.textContent = `System Configuration Error: ${err.message}. Please check your backend .env file, verify that port 8000 is running, and refresh the page.`;
     authErrorMsg.style.display = "block";
     authSubmitBtn.disabled = true;
     authSubmitBtn.textContent = "Configuration Required";
   }
 }
 
-// Boot app
 initApp();
 
-// File operations
 function handleFile(file) {
-  const allowed = [".pdf", ".docx", ".txt", ".csv", ".xlsx", ".pptx"];
   const ext = "." + file.name.split(".").pop().toLowerCase();
 
-  if (!allowed.includes(ext)) {
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
     showToast("Unsupported file type. Supported formats: PDF, Text, CSV, Excel, Word, PowerPoint.", "error");
     return;
   }
 
-  if (file.size > 50 * 1024 * 1024) {
-    showToast("File too large. Maximum size is 50 MB.", "error");
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    showToast(`File too large. Maximum size is ${MAX_FILE_SIZE_MB} MB.`, "error");
     return;
   }
 
   uploadFile(file);
 }
 
-// Base64 converter
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -248,18 +245,43 @@ const fileToBase64 = (file) =>
     reader.onerror = (error) => reject(error);
   });
 
-async function uploadFile(file) {
-  const documentId = (typeof crypto.randomUUID === "function") 
-    ? crypto.randomUUID() 
-    : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
-      );
+async function saveDocumentMetadata(documentId, file, uploadResult) {
+  const { error } = await supabaseClient
+    .from("documents")
+    .insert({
+      id: documentId,
+      user_id: currentUser.id,
+      filename: file.name,
+      file_path: uploadResult.file_path,
+      vector_store_path: uploadResult.vector_store_path,
+      file_data: null,
+    });
 
-  // Add mock file state to the pending Uploads Map
+  if (error) throw error;
+}
+
+async function uploadDocumentBackup(documentId, file, base64Promise) {
+  try {
+    const fileDataB64 = await base64Promise;
+    if (!fileDataB64) return;
+
+    const { error } = await supabaseClient
+      .from("documents")
+      .update({ file_data: fileDataB64 })
+      .eq("id", documentId);
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn(`Cloud backup upload failed for "${file.name}":`, err);
+  }
+}
+
+async function uploadFile(file) {
+  const documentId = generateDocumentId();
   pendingUploads.set(documentId, {
     id: documentId,
     filename: file.name,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   });
 
   activeDocumentId = documentId;
@@ -273,64 +295,28 @@ async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);
 
-  // Background Ingestion task execution
   (async () => {
     try {
-      console.log(`⏳ Background Ingestion starting for "${file.name}" (ID: ${documentId})`);
-
-      // Convert file to base64 in parallel
-      const base64Promise = fileToBase64(file).catch(err => {
-        console.warn("⚠️ Base64 conversion failed:", err);
+      const base64Promise = fileToBase64(file).catch((err) => {
+        console.warn("Base64 conversion failed:", err);
         return "";
       });
 
-      // Await backend indexing first to make the document queryable ASAP
-      const data = await uploadToBackend(documentId, formData);
+      const uploadResult = await uploadToBackend(documentId, formData);
+      await saveDocumentMetadata(documentId, file, uploadResult);
 
-      // Save document metadata directly in Supabase (with file_data as null to avoid blockages)
-      const { error: dbErr } = await supabaseClient
-        .from("documents")
-        .insert({
-          id: documentId,
-          user_id: currentUser.id,
-          filename: file.name,
-          file_path: data.file_path,
-          vector_store_path: data.vector_store_path,
-          file_data: null
-        });
-
-      if (dbErr) throw dbErr;
-
-      console.log(`✅ Background Ingestion complete for "${file.name}"!`);
       showToast(`"${file.name}" indexed successfully!`, "success");
 
-      // Stop the UI loading spinner immediately
       pendingUploads.delete(documentId);
-
       await fetchUserDocuments();
+
       if (activeDocumentId === documentId) {
         selectDocument(documentId, file.name);
       }
 
-      // Perform cloud base64 backup upload silently out-of-band
-      (async () => {
-        try {
-          const fileDataB64 = await base64Promise;
-          if (fileDataB64) {
-            console.log(`☁️ Starting out-of-band database backup upload for "${file.name}"...`);
-            const { error: backupErr } = await supabaseClient
-              .from("documents")
-              .update({ file_data: fileDataB64 })
-              .eq("id", documentId);
-            if (backupErr) throw backupErr;
-            console.log(`☁️ Cloud database backup completed for "${file.name}".`);
-          }
-        } catch (backupErr) {
-          console.warn(`⚠️ Cloud backup upload failed for "${file.name}":`, backupErr);
-        }
-      })();
+      uploadDocumentBackup(documentId, file, base64Promise);
     } catch (err) {
-      console.error(`❌ Background Ingestion failed for "${file.name}":`, err);
+      console.error(`Background ingestion failed for "${file.name}":`, err);
       showToast(`Failed to index "${file.name}": ${err.message}`, "error");
 
       pendingUploads.delete(documentId);
@@ -354,9 +340,8 @@ async function fetchUserDocuments() {
 
     if (error) throw error;
 
-    let allDocs = [];
+    const allDocs = [];
 
-    // Append pending uploads first
     pendingUploads.forEach((pendingDoc) => {
       allDocs.push({
         id: pendingDoc.id,
@@ -385,7 +370,8 @@ async function fetchUserDocuments() {
       item.className = `doc-item ${doc.id === activeDocumentId ? "active" : ""}`;
       item.dataset.id = doc.id;
 
-      const ext = doc.filename.split(".").pop().toUpperCase();
+      const ext = escapeHTML(doc.filename.split(".").pop().toUpperCase());
+      const filename = escapeHTML(doc.filename);
 
       if (doc.isPending) {
         item.classList.add("temp-indexing");
@@ -394,7 +380,7 @@ async function fetchUserDocuments() {
             <div class="indexing-spinner"></div>
           </div>
           <div class="doc-info">
-            <span class="doc-name">${doc.filename}</span>
+            <span class="doc-name">${filename}</span>
             <span class="doc-meta">Indexing text...</span>
           </div>
         `;
@@ -404,7 +390,7 @@ async function fetchUserDocuments() {
             <span class="doc-ext">${ext}</span>
           </div>
           <div class="doc-info">
-            <span class="doc-name">${doc.filename}</span>
+            <span class="doc-name">${filename}</span>
             <span class="doc-meta">${new Date(doc.created_at).toLocaleDateString()}</span>
           </div>
           <button class="btn-doc-delete" title="Delete document">
@@ -433,7 +419,7 @@ async function fetchUserDocuments() {
     });
   } catch (err) {
     console.error(err);
-    docList.innerHTML = `<p class="doc-list-empty" style="color:var(--error);">Failed to load document index: ${err.message}</p>`;
+    docList.innerHTML = `<p class="doc-list-empty error-text">Failed to load document index: ${escapeHTML(err.message)}</p>`;
   }
 }
 
@@ -460,7 +446,6 @@ async function selectDocument(docId, filename) {
     return;
   }
 
-  // Load message history from DB
   messagesList.innerHTML = '<p class="doc-list-empty">Loading chat history...</p>';
 
   try {
@@ -475,26 +460,24 @@ async function selectDocument(docId, filename) {
     messagesList.innerHTML = "";
     if (data && data.length > 0) {
       data.forEach((msg) => {
-        appendMessage(msg.role, msg.content, msg.sources, new Date(msg.created_at), activeDocumentName);
+        appendMessage(msg.role, msg.content, msg.sources, new Date(msg.created_at));
       });
     } else {
       appendMessage(
         "assistant",
         `Hi! I have loaded **${filename}**. Ask me any analytical, structural, or comparative questions about its content!`,
         [],
-        new Date(),
-        activeDocumentName
+        new Date()
       );
     }
     scrollToBottom();
   } catch (err) {
     messagesList.innerHTML = "";
-    appendMessage("assistant", `Failed to load conversation history: ${err.message}`, [], new Date(), activeDocumentName);
+    appendMessage("assistant", `Failed to load conversation history: ${err.message}`, [], new Date());
   }
 }
 
 async function deleteDocument(docId) {
-  // 1. Instantly fade and slide out the document element (Optimistic Update)
   const docItemEl = document.querySelector(`.doc-item[data-id="${docId}"]`);
   if (docItemEl) {
     docItemEl.style.opacity = "0";
@@ -513,13 +496,10 @@ async function deleteDocument(docId) {
     resetSession();
   }
 
-  // 3. Perform backend API delete and database delete asynchronously in the background
   (async () => {
     try {
-      // Delete index files from backend microservice
       await deleteBackendDocument(docId);
 
-      // Delete document backup record from Supabase
       const { error } = await supabaseClient
         .from("documents")
         .delete()
@@ -528,25 +508,29 @@ async function deleteDocument(docId) {
       if (error) throw error;
 
       showToast("Document deleted successfully.", "success");
-      
-      // Refresh documents list to ensure local state aligns with DB
       fetchUserDocuments();
     } catch (err) {
-      console.error("❌ Failed to delete document:", err);
+      console.error("Failed to delete document:", err);
       showToast(`Delete failed: ${err.message}`, "error");
-      
-      // Re-fetch documents to restore list item if background delete failed
       fetchUserDocuments();
     }
   })();
 }
 
-// Message submissions
+async function getSessionToken() {
+  try {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    return session?.access_token || null;
+  } catch (err) {
+    console.warn("Could not retrieve active session token:", err);
+    return null;
+  }
+}
+
 async function sendQuestion() {
   const question = questionInput.value.trim();
   if (!question || isLoading || !activeDocumentId) return;
 
-  // Intercept early questions if active document is still indexing in transit
   if (pendingUploads.has(activeDocumentId)) {
     showToast("Please wait for indexing to complete.", "error");
     return;
@@ -555,15 +539,13 @@ async function sendQuestion() {
   isLoading = true;
   setInputEnabled(false, activeDocumentId);
 
-  // 1. Append User bubble and clear inputs
-  appendMessage("user", question, [], new Date(), activeDocumentName);
+  appendMessage("user", question, [], new Date());
   questionInput.value = "";
   questionInput.style.height = "24px";
 
   const typingId = appendTyping();
 
   try {
-    // 2. Write User message to database
     const { error: userMsgErr } = await supabaseClient
       .from("chat_messages")
       .insert({
@@ -575,23 +557,12 @@ async function sendQuestion() {
       });
     if (userMsgErr) throw userMsgErr;
 
-    // 3. Fetch active token
-    let sessionToken = null;
-    try {
-      const { data: { session } } = await supabaseClient.auth.getSession();
-      if (session) sessionToken = session.access_token;
-    } catch (sessionErr) {
-      console.warn("⚠️ Could not retrieve active session token:", sessionErr);
-    }
-
-    // 4. Send API query to backend
+    const sessionToken = await getSessionToken();
     const data = await askBackendQuestion(activeDocumentId, question, sessionToken);
 
-    // 5. Remove typing loading card, render response bubble
     removeTyping(typingId);
-    appendMessage("assistant", data.answer, data.sources, new Date(), activeDocumentName);
+    appendMessage("assistant", data.answer, data.sources, new Date());
     
-    // 6. Write Assistant response to database
     const { error: assistMsgErr } = await supabaseClient
       .from("chat_messages")
       .insert({
@@ -605,7 +576,7 @@ async function sendQuestion() {
 
   } catch (err) {
     removeTyping(typingId);
-    appendMessage("assistant", `${err.message}`, [], new Date(), activeDocumentName);
+    appendMessage("assistant", `${err.message}`, [], new Date());
     console.error(err);
   } finally {
     isLoading = false;
@@ -614,7 +585,6 @@ async function sendQuestion() {
   }
 }
 
-// Form event handlers
 sendBtn.addEventListener("click", sendQuestion);
 questionInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -623,12 +593,10 @@ questionInput.addEventListener("keydown", (e) => {
   }
 });
 
-// Reset visual flows
 function resetSession() {
   activeDocumentId = null;
   activeDocumentName = "";
   docList.innerHTML = '<p class="doc-list-empty">No active workspace. Please sign in.</p>';
-  progressWrap.style.display = "none";
   chatSubtitle.textContent = "Sign in to get started";
   welcomeScreen.style.display = "flex";
   messagesList.innerHTML = "";
@@ -636,7 +604,6 @@ function resetSession() {
   setInputEnabled(false, null);
 }
 
-// Bind mobile toggle listeners
 if (menuToggleBtn && sidebar && sidebarOverlay) {
   menuToggleBtn.addEventListener("click", () => {
     sidebar.classList.add("open");
@@ -648,7 +615,6 @@ if (menuToggleBtn && sidebar && sidebarOverlay) {
     sidebarOverlay.classList.remove("show");
   });
 
-  // Auto-dismiss mobile drawer on item selection
   docList.addEventListener("click", (e) => {
     if (window.innerWidth <= 768 && e.target.closest(".doc-item") && !e.target.closest(".btn-doc-delete")) {
       sidebar.classList.remove("open");
@@ -657,13 +623,11 @@ if (menuToggleBtn && sidebar && sidebarOverlay) {
   });
 }
 
-// Handle mobile virtual keyboard and viewport height dynamically
 if (window.visualViewport) {
   const updateViewportHeight = () => {
     const height = window.visualViewport.height;
     document.documentElement.style.setProperty("--viewport-height", `${height}px`);
     
-    // Auto scroll chat to the bottom when layout bounds change
     if (document.activeElement === questionInput) {
       setTimeout(scrollToBottom, 50);
     }
@@ -672,11 +636,9 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", updateViewportHeight);
   window.visualViewport.addEventListener("scroll", updateViewportHeight);
   
-  // Run once initially
   updateViewportHeight();
 }
 
-// Ensure smooth scroll to bottom when question input receives focus
 questionInput.addEventListener("focus", () => {
   setTimeout(scrollToBottom, 150);
 });

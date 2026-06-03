@@ -10,7 +10,6 @@ export function initSupabase(url, anonKey) {
     supabaseUrl = supabaseUrl.slice(0, -1);
   }
   
-  console.log("⚡ Initializing Supabase client with URL:", supabaseUrl);
   supabaseClient = window.supabase.createClient(supabaseUrl, anonKey.trim());
   return supabaseClient;
 }

@@ -1,10 +1,6 @@
 // DOM Element References
 export const uploadZone = document.getElementById("uploadZone");
 export const fileInput = document.getElementById("fileInput");
-export const progressWrap = document.getElementById("progressWrap");
-export const progressBar = document.getElementById("progressBar");
-export const progressLabel = document.getElementById("progressLabel");
-export const progressPct = document.getElementById("progressPct");
 export const docList = document.getElementById("docList");
 export const chatSubtitle = document.getElementById("chatSubtitle");
 export const welcomeScreen = document.getElementById("welcomeScreen");

@@ -3,7 +3,7 @@ import { messagesList, scrollToBottom } from "./ui.js";
 export let messageCount = 0;
 let typingCounter = 0;
 
-export function appendMessage(role, text, sources = [], dateObj = new Date(), activeDocName = "") {
+export function appendMessage(role, text, sources = [], dateObj = new Date()) {
   messageCount++;
   const msgEl = document.createElement("div");
   msgEl.className = `message ${role}`;
@@ -20,7 +20,7 @@ export function appendMessage(role, text, sources = [], dateObj = new Date(), ac
          </svg>
        </div>`;
 
-  const sourcesHTML = buildSourcesHTML(sources, activeDocName);
+  const sourcesHTML = buildSourcesHTML(sources);
   const timeStr = formatTime(dateObj);
   const formattedText = role === "assistant" ? parseMarkdown(text) : escapeHTML(text).replace(/\n/g, "<br>");
 
@@ -41,13 +41,12 @@ export function appendMessage(role, text, sources = [], dateObj = new Date(), ac
   });
 }
 
-export function buildSourcesHTML(sources, activeDocName = "") {
+export function buildSourcesHTML(sources) {
   if (!sources || sources.length === 0) return "";
 
   const items = sources
     .map((s, i) => {
       const pageInfo = s.page != null ? `Page ${s.page + 1}` : "";
-      const sourceName = s.source || activeDocName || "Document";
       return `
       <div class="source-item" title="Click to expand">
         <div class="source-header">
@@ -104,7 +103,6 @@ export function resetMessageCount() {
   messageCount = 0;
 }
 
-// Format utilities
 export function formatTime(date) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -121,40 +119,24 @@ export function escapeHTML(str) {
 export function parseMarkdown(text) {
   let html = escapeHTML(text);
   
-  // 1. Parse bold: **text** -> <strong>text</strong>
-  html = html.replace(/\*\*(.*?)\*\?/g, "<strong>$1</strong>"); // Wait, replacing a standard * correctly:
   html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-  
-  // 2. Parse italics: *text* or _text_ -> <em>text</em>
   html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
   html = html.replace(/_(.*?)_/g, "<em>$1</em>");
-  
-  // 3. Parse code blocks: ```code``` -> <pre><code>code</code></pre>
   html = html.replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>");
-  
-  // 4. Parse inline code: `code` -> <code>code</code>
   html = html.replace(/`(.*?)`/g, "<code>$1</code>");
-  
-  // 5. Parse blockquotes: &gt; text -> <blockquote>text</blockquote>
   html = html.replace(/^&gt;\s+(.*)$/gm, "<blockquote>$1</blockquote>");
-
-  // 6. Parse headers: # Header -> <h3>Header</h3>
   html = html.replace(/^### (.*)$/gm, "<h3>$1</h3>");
   html = html.replace(/^## (.*)$/gm, "<h3>$1</h3>");
   html = html.replace(/^# (.*)$/gm, "<h3>$1</h3>");
 
-  // 7. Parse lists
   const lines = html.split("\n");
   let inUl = false;
   let inOl = false;
-  let result = [];
+  const result = [];
   
   for (let line of lines) {
     const trimmed = line.trim();
-    
-    // Bullet list match (* or - or •)
     const bulletMatch = trimmed.match(/^[\*\-\u2022]\s+(.*)$/);
-    // Numbered list match (e.g. 1. text)
     const numberMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
     
     if (bulletMatch) {
@@ -194,14 +176,8 @@ export function parseMarkdown(text) {
   if (inOl) result.push("</ol>");
   
   html = result.join("\n");
-  
-  // Replace newlines with <br>
   html = html.replace(/\n/g, "<br>");
-  
-  // Clean up any double br
   html = html.replace(/(<br>){2,}/g, "<br><br>");
-  
-  // Clean up <br> tags adjacent to block elements to prevent layout spacing issues
   html = html.replace(/<br>\s*(<\/?(?:ul|ol|li|pre|blockquote|h3)[^>]*>)/gi, "$1");
   html = html.replace(/(<\/?(?:ul|ol|li|pre|blockquote|h3)[^>]*>)\s*<br>/gi, "$1");
   

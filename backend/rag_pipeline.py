@@ -2,18 +2,20 @@ import os
 import warnings
 from pathlib import Path
 
-# suppress langchain deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Import custom modular components
-from embeddings import ParallelGoogleGenerativeAIEmbeddings
 from document_loaders import load_document
+from embeddings import ParallelGoogleGenerativeAIEmbeddings
+
+MAX_DOCUMENT_CHARS = 1_500_000
+RETRIEVAL_K = 6
 
 SYSTEM_PROMPT = """\
 You are an expert, highly intelligent AI assistant analyzing the provided document context.
@@ -32,6 +34,14 @@ Context:
 
 def _format_docs(docs: list) -> str:
     return "\n\n---\n\n".join(doc.page_content for doc in docs)
+
+
+def _chunk_settings(total_chars: int) -> tuple[int, int]:
+    if total_chars < 500 * 1024:
+        return 1500, 150
+    if total_chars < 2 * 1024 * 1024:
+        return 4000, 400
+    return 8000, 800
 
 
 class RAGPipeline:
@@ -58,16 +68,14 @@ class RAGPipeline:
 
         documents = load_document(file_path)
         
-        # Check if we successfully extracted any selectable text
         total_text = ""
         if documents:
             total_text = "".join(doc.page_content for doc in documents).strip()
 
-        # If text is empty or extremely short, trigger Gemini Multimodal OCR fallback for PDFs
         if len(total_text) < 15:
             ext = Path(file_path).suffix.lower()
             if ext == ".pdf":
-                print(f"⚠️ Selectable text is empty for {self.doc_name}. Falling back to Gemini Multimodal OCR...")
+                print(f"Selectable text is empty for {self.doc_name}. Falling back to Gemini Multimodal OCR.")
                 try:
                     from google import genai
                     from google.genai import types
@@ -93,35 +101,20 @@ class RAGPipeline:
                     if ocr_text and ocr_text.strip():
                         total_text = ocr_text.strip()
                 except Exception as ocr_err:
-                    print(f"⚠️ Gemini OCR fallback failed: {ocr_err}")
+                    print(f"Gemini OCR fallback failed: {ocr_err}")
 
-        # Final foolproof check: if no content could be extracted, use a placeholder
         if not total_text:
             total_text = f"This document '{self.doc_name}' contains no readable text or is empty."
 
-        # Truncate content to protect API limit and ensure fast response times
-        MAX_CHARS = 1500000
-        if len(total_text) > MAX_CHARS:
-            print(f"⚠️ Document content length ({len(total_text)}) exceeds MAX_CHARS ({MAX_CHARS}). Truncating to optimize speed.")
-            total_text = total_text[:MAX_CHARS]
+        if len(total_text) > MAX_DOCUMENT_CHARS:
+            print(f"Document content length ({len(total_text)}) exceeds MAX_DOCUMENT_CHARS ({MAX_DOCUMENT_CHARS}). Truncating to optimize speed.")
+            total_text = total_text[:MAX_DOCUMENT_CHARS]
 
-        # Re-wrap content in a single Document object for RecursiveCharacterTextSplitter
-        from langchain_core.documents import Document
         documents = [Document(page_content=total_text, metadata={"source": self.doc_name})]
         total_chars = len(total_text)
-
-        # Adaptive chunking thresholds capped at 8000 for gemini-embedding-001 limits
-        if total_chars < 500 * 1024: # Under 500 KB
-            chunk_size = 1500
-            chunk_overlap = 150
-        elif total_chars < 2 * 1024 * 1024: # 500 KB to 2 MB
-            chunk_size = 4000
-            chunk_overlap = 400
-        else: # Over 2 MB (capped at 8000 chars)
-            chunk_size = 8000
-            chunk_overlap = 800
+        chunk_size, chunk_overlap = _chunk_settings(total_chars)
             
-        print(f"📊 Adaptive chunking: document character count is {total_chars}. Using chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
+        print(f"Adaptive chunking: document character count is {total_chars}. Using chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -129,16 +122,14 @@ class RAGPipeline:
         )
         chunks = splitter.split_documents(documents)
         
-        # If chunks is empty, use the placeholder text
         if not chunks:
-            from langchain_core.documents import Document
             placeholder_text = f"This document '{self.doc_name}' contains no readable text or is empty."
             chunks = [Document(page_content=placeholder_text, metadata={"source": self.doc_name})]
 
         self.vector_store = FAISS.from_documents(chunks, self.embeddings)
         self.retriever = self.vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": 6},
+            search_kwargs={"k": RETRIEVAL_K},
         )
 
     def save_index(self, folder_path: str):
@@ -155,20 +146,16 @@ class RAGPipeline:
         )
         self.retriever = self.vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": 6},
+            search_kwargs={"k": RETRIEVAL_K},
         )
 
     def ask(self, question: str) -> dict:
         if not self.retriever:
             raise ValueError("No document has been processed yet.")
 
-        # 1. Retrieve the source documents once (cuts embedding search latency in half!)
         source_docs = self.retriever.invoke(question)
-
-        # 2. Format the context for the prompt
         context_str = _format_docs(source_docs)
 
-        # 3. Create the chat prompt template and run the reasoning chain
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", SYSTEM_PROMPT),
@@ -178,7 +165,6 @@ class RAGPipeline:
         llm_chain = prompt | self.llm | StrOutputParser()
         answer = llm_chain.invoke({"context": context_str, "question": question})
 
-        # build unique list of citations
         seen: set[str] = set()
         sources = []
         for doc in source_docs:
