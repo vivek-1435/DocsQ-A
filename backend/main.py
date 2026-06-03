@@ -23,7 +23,13 @@ log = logging.getLogger(__name__)
 app = FastAPI(title="RAG Document Q&A", version="3.0.0")
 
 origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()] or [
-    "http://localhost", "http://localhost:5500", "http://127.0.0.1:5500", "null"
+    "http://localhost",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://docs-q-a.vercel.app",
+    "null"
 ]
 app.add_middleware(
     CORSMiddleware,
